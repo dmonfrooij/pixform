@@ -111,4 +111,4 @@ pixform/
 
 ## License
 
-MIT
+Public
