@@ -22,7 +22,7 @@ Convert a single photo into a print-ready 3D model using state-of-the-art AI, ru
 ## Installation
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/pixform.git
+git clone https://github.com/dmonfrooij/pixform.git
 cd pixform
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
