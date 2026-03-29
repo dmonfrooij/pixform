@@ -1,5 +1,10 @@
 # PIXFORM - Installation Script
 # Right-click > "Run with PowerShell"
+param(
+    [ValidateSet("auto", "nvidia", "cpu")]
+    [string]$Profile = "auto"
+)
+
 Set-Location $PSScriptRoot
 $ErrorActionPreference = "Continue"
 
@@ -45,6 +50,14 @@ try {
     OK "GPU: $nvOut"
 } catch { Warn "Could not detect GPU" }
 
+$runtimeDevice = "cpu"
+if ($Profile -eq "nvidia") {
+    $runtimeDevice = "cuda"
+} elseif ($Profile -eq "auto") {
+    try { nvidia-smi | Out-Null; $runtimeDevice = "cuda" } catch { $runtimeDevice = "cpu" }
+}
+Info "Install profile: $Profile (runtime device target: $runtimeDevice)"
+
 # ── Virtual environment ────────────────────────────────────────────────────────
 Step "Creating virtual environment"
 $venvPath = Join-Path $PSScriptRoot "venv"
@@ -56,20 +69,34 @@ if (-not (Test-Path -LiteralPath $PY)) { Fail "Failed to create venv" }
 OK "Virtual environment ready"
 
 # ── PyTorch ────────────────────────────────────────────────────────────────────
-Step "Installing PyTorch 2.5.1 + CUDA 12.4 (~2.5 GB)"
-Info "This is the largest download, please wait..."
-& "$PY" -m pip install "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124 -q
-if ($LASTEXITCODE -ne 0) { Fail "PyTorch installation failed" }
-OK "PyTorch installed"
+if ($runtimeDevice -eq "cuda") {
+    Step "Installing PyTorch 2.5.1 + CUDA 12.4 (~2.5 GB)"
+    Info "This is the largest download, please wait..."
+    & "$PY" -m pip install "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124 -q
+    if ($LASTEXITCODE -ne 0) { Fail "PyTorch CUDA installation failed" }
+    OK "PyTorch CUDA installed"
+} else {
+    Step "Installing PyTorch 2.5.1 (CPU)"
+    & "$PY" -m pip install "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" -q
+    if ($LASTEXITCODE -ne 0) { Fail "PyTorch CPU installation failed" }
+    OK "PyTorch CPU installed"
+}
 
 # ── Core dependencies ──────────────────────────────────────────────────────────
 Step "Installing core dependencies"
+if ($runtimeDevice -eq "cuda") {
+    $rembgPkg = "rembg[gpu]"
+    $onnxPkg = "onnxruntime-gpu"
+} else {
+    $rembgPkg = "rembg"
+    $onnxPkg = "onnxruntime"
+}
 & "$PY" -m pip install `
     "numpy==1.26.4" "Pillow>=10.0" "trimesh[easy]" "scipy" "imageio" `
     "einops" "omegaconf>=2.3" "huggingface_hub" "transformers>=4.40" `
     "accelerate>=0.30" "diffusers>=0.27" "fastapi==0.115.5" `
     "uvicorn[standard]==0.32.1" "python-multipart==0.0.12" "pydantic>=2.0" `
-    "httpx" "rembg[gpu]" "onnxruntime-gpu" "open3d" "PyMCubes" "pyrender" -q
+    "httpx" "$rembgPkg" "$onnxPkg" "open3d" "PyMCubes" "pyrender" -q
 if ($LASTEXITCODE -ne 0) { Fail "Core dependencies failed" }
 OK "Core dependencies installed"
 
@@ -216,4 +243,8 @@ Write-Host "`n  ========================================" -ForegroundColor Green
 Write-Host "   PIXFORM installed!" -ForegroundColor Green
 Write-Host "   Run PIXFORM.bat to start." -ForegroundColor Green
 Write-Host "  ========================================" -ForegroundColor Green
+
+Set-Content -LiteralPath (Join-Path $PSScriptRoot ".pixform_device") -Value $runtimeDevice -Encoding ASCII
+OK "Saved runtime device preference to .pixform_device"
+
 Read-Host "Press Enter to exit"

@@ -39,6 +39,7 @@ models = {
     "triposr":   None,
     "hunyuan":   None,
     "rembg_sess": None,
+    "runtime_device": "cpu",
 }
 jobs: dict = {}
 
@@ -46,10 +47,59 @@ VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
 TRIPOSR_RES_LEVELS = [1024, 896, 768, 640, 512, 448, 384, 320, 256, 192, 128]
 
 
+def resolve_runtime_device() -> str:
+    """Resolve runtime device from env with safe fallback order."""
+    import torch
+
+    pref = os.getenv("PIXFORM_DEVICE", "auto").strip().lower()
+    alias = {
+        "nvidia": "cuda",
+        "mac": "mps",
+    }
+    pref = alias.get(pref, pref)
+
+    cuda_ok = torch.cuda.is_available()
+    mps_backend = getattr(torch.backends, "mps", None)
+    mps_ok = bool(mps_backend) and mps_backend.is_available()
+
+    if pref in {"", "auto"}:
+        if cuda_ok:
+            return "cuda"
+        if mps_ok:
+            return "mps"
+        return "cpu"
+
+    if pref == "cuda":
+        if cuda_ok:
+            return "cuda"
+        logger.warning("PIXFORM_DEVICE=cuda requested but CUDA is unavailable, falling back")
+        return "mps" if mps_ok else "cpu"
+
+    if pref == "mps":
+        if mps_ok:
+            return "mps"
+        logger.warning("PIXFORM_DEVICE=mps requested but MPS is unavailable, falling back")
+        return "cuda" if cuda_ok else "cpu"
+
+    if pref == "cpu":
+        return "cpu"
+
+    logger.warning(f"Unknown PIXFORM_DEVICE '{pref}', using auto")
+    if cuda_ok:
+        return "cuda"
+    if mps_ok:
+        return "mps"
+    return "cpu"
+
+
 # ── Model loading ─────────────────────────────────────────────────────────────
 
 def load_all_models():
     import torch
+
+    runtime_device = resolve_runtime_device()
+    models["runtime_device"] = runtime_device
+    logger.info(f"Runtime device: {runtime_device}")
 
     # rembg session (RMBG-1.4 — best background removal quality)
     try:
@@ -65,13 +115,14 @@ def load_all_models():
         except Exception as e2:
             logger.warning(f"rembg fallback failed: {e2}")
 
-    if not torch.cuda.is_available():
-        logger.warning("⚠️  No CUDA GPU — running in CPU demo mode")
-        return
-
-    gpu_name = torch.cuda.get_device_name(0)
-    vram_gb  = torch.cuda.get_device_properties(0).total_memory / 1e9
-    logger.info(f"GPU: {gpu_name} ({vram_gb:.1f} GB VRAM)")
+    if runtime_device == "cuda":
+        gpu_name = torch.cuda.get_device_name(0)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        logger.info(f"GPU: {gpu_name} ({vram_gb:.1f} GB VRAM)")
+    elif runtime_device == "mps":
+        logger.info("Apple Metal (MPS) detected")
+    else:
+        logger.warning("No GPU backend available — running on CPU")
 
     # TripoSR
     try:
@@ -82,14 +133,18 @@ def load_all_models():
             config_name="config.yaml",
             weight_name="model.ckpt",
         )
-        m.renderer.set_chunk_size(131072)
-        m.to("cuda")
+        m.renderer.set_chunk_size(131072 if runtime_device == "cuda" else 65536)
+        m.to(runtime_device)
         models["triposr"] = m
-        logger.info("✅ TripoSR loaded")
+        logger.info(f"✅ TripoSR loaded on {runtime_device}")
     except Exception as e:
         logger.warning(f"TripoSR failed to load: {e}")
 
     # Hunyuan3D-2 shape
+    if runtime_device != "cuda":
+        logger.warning("Hunyuan3D-2 skipped: currently supported only on CUDA/NVIDIA")
+        return
+
     try:
         # Ensure hy3dgen is on path (it's a folder, not an installed package)
         _p = BASE_DIR / "hy3dgen"
@@ -488,9 +543,11 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, progress=28, message="Generating 3D structure (TripoSR)...")
         loop = asyncio.get_event_loop()
 
+        runtime_device = models.get("runtime_device", "cpu")
+
         def infer():
             with torch.no_grad():
-                return models["triposr"]([img], device="cuda")
+                return models["triposr"]([img], device=runtime_device)
 
         scene_codes = await loop.run_in_executor(None, infer)
 
@@ -511,7 +568,8 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
                     return result, res
                 except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
                     logger.warning(f"Resolution {res} failed: {e}")
-                    torch.cuda.empty_cache()
+                    if runtime_device == "cuda":
+                        torch.cuda.empty_cache()
             raise RuntimeError("All resolutions failed")
 
         raw, used_res = await loop.run_in_executor(None, extract)
@@ -652,11 +710,15 @@ async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict)
 @app.get("/health")
 async def health():
     import torch
+    mps_backend = getattr(torch.backends, "mps", None)
+    mps_ok = bool(mps_backend) and mps_backend.is_available()
     return {
         "triposr":    models["triposr"] is not None,
         "hunyuan":    models["hunyuan"] is not None,
         "rembg":      models["rembg_sess"] is not None,
         "cuda":       torch.cuda.is_available(),
+        "mps":        mps_ok,
+        "runtime_device": models.get("runtime_device", "cpu"),
         "gpu":        torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
     }
 
