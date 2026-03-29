@@ -19,16 +19,26 @@ try { git --version | Out-Null; OK "Git found" }
 catch { Fail "Git not found. Install from: https://git-scm.com/download/win" }
 
 $py = $null
+$pyCmd = $null
+$pyArgs = @()
 @(
     "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
     "C:\Python310\python.exe",
     "C:\Program Files\Python310\python.exe"
 ) | ForEach-Object { if ((Test-Path -LiteralPath $_) -and -not $py) { $py = $_ } }
 if (-not $py) {
-    try { $v = py -3.10 --version 2>&1; if ($v -match "3\.10") { $py = "py -3.10" } } catch {}
+    try {
+        $v = py -3.10 --version 2>&1
+        if ($v -match "3\.10") {
+            $pyCmd = "py"
+            $pyArgs = @("-3.10")
+        }
+    } catch {}
+} else {
+    $pyCmd = $py
 }
-if (-not $py) { Fail "Python 3.10 not found. Download: https://www.python.org/downloads/release/python-31011/" }
-OK "Python 3.10: $py"
+if (-not $pyCmd) { Fail "Python 3.10 not found. Download: https://www.python.org/downloads/release/python-31011/" }
+OK "Python 3.10 ready"
 
 try {
     $nvOut = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>&1
@@ -39,7 +49,7 @@ try {
 Step "Creating virtual environment"
 $venvPath = Join-Path $PSScriptRoot "venv"
 if (Test-Path -LiteralPath $venvPath) { Remove-Item -Recurse -Force -LiteralPath $venvPath }
-& $py -m venv "$venvPath"
+& $pyCmd @pyArgs -m venv "$venvPath"
 $PY = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $PY)) { Fail "Failed to create venv" }
 & "$PY" -m pip install --upgrade pip setuptools wheel -q
@@ -147,9 +157,9 @@ if old in txt2:
 OK "TripoSR patched"
 
 # ── Pin NumPy last ─────────────────────────────────────────────────────────────
-Step "Pinning NumPy 1.26.4"
-& "$PY" -m pip install "numpy==1.26.4" --force-reinstall -q
-OK "NumPy pinned at 1.26.4"
+Step "Pinning NumPy/OpenCV compatibility"
+& "$PY" -m pip install "numpy==1.26.4" "opencv-python==4.10.0.84" --force-reinstall -q
+OK "NumPy/OpenCV pinned (1.26.4 / 4.10.0.84)"
 
 # ── Validate ───────────────────────────────────────────────────────────────────
 Step "Validating installation"
@@ -194,6 +204,12 @@ try:
     print(f'  open3d {open3d.__version__}: OK')
 except Exception as e:
     print(f'  open3d: FAILED - {e}')
+
+try:
+    import cv2
+    print(f'  opencv-python {cv2.__version__}: OK')
+except Exception as e:
+    print(f'  opencv-python: FAILED - {e}')
 "@
 
 Write-Host "`n  ========================================" -ForegroundColor Green

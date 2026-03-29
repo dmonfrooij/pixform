@@ -42,6 +42,9 @@ models = {
 }
 jobs: dict = {}
 
+VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
+TRIPOSR_RES_LEVELS = [1024, 896, 768, 640, 512, 448, 384, 320, 256, 192, 128]
+
 
 # ── Model loading ─────────────────────────────────────────────────────────────
 
@@ -290,32 +293,45 @@ def to_trimesh(raw):
     return trimesh.Trimesh(vertices=raw.vertices, faces=raw.faces)
 
 
+def _normalize_triposr_resolution(value: int) -> int:
+    """Snap requested resolution to the closest supported TripoSR extraction level."""
+    try:
+        v = int(value)
+    except Exception:
+        return 512
+    v = max(128, min(1024, v))
+    return min(TRIPOSR_RES_LEVELS, key=lambda x: abs(x - v))
+
+
 def export_all(mesh, out_dir: Path, job_id: str):
     """Export mesh to STL, 3MF, GLB and OBJ."""
-    # GLB
-    glb = out_dir / "model.glb"
-    mesh.export(str(glb))
-
-    # STL
     stl = out_dir / "model.stl"
-    mesh.export(str(stl))
-
-    # OBJ
-    obj = out_dir / "model.obj"
-    mesh.export(str(obj))
-
-    # 3MF
     tmf = out_dir / "model.3mf"
+    glb = out_dir / "model.glb"
+    obj = out_dir / "model.obj"
+
+    try:
+        mesh.export(str(stl))
+    except Exception as e:
+        raise RuntimeError(f"STL export failed: {e}") from e
+
     try:
         mesh.export(str(tmf))
     except Exception:
         _export_3mf_manual(mesh, tmf)
 
-    upd(job_id,
-        stl_url=f"/outputs/{job_id}/model.stl",
-        tmf_url=f"/outputs/{job_id}/model.3mf",
-        glb_url=f"/outputs/{job_id}/model.glb",
-        obj_url=f"/outputs/{job_id}/model.obj",
+    for fmt_path in (glb, obj):
+        try:
+            mesh.export(str(fmt_path))
+        except Exception as e:
+            logger.warning(f"{fmt_path.suffix.upper()} export failed: {e}")
+
+    upd(
+        job_id,
+        stl_url=f"/outputs/{job_id}/model.stl" if stl.exists() else None,
+        tmf_url=f"/outputs/{job_id}/model.3mf" if tmf.exists() else None,
+        glb_url=f"/outputs/{job_id}/model.glb" if glb.exists() else None,
+        obj_url=f"/outputs/{job_id}/model.obj" if obj.exists() else None,
         poly_count=len(mesh.faces),
     )
 
@@ -480,7 +496,9 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         # Mesh extraction — try highest resolution that fits in VRAM
         target_res = settings.get("resolution", 512)
-        fallbacks  = [r for r in [512, 448, 384, 320, 256] if r <= target_res]
+        fallbacks = [r for r in TRIPOSR_RES_LEVELS if r <= target_res]
+        if not fallbacks:
+            fallbacks = [128]
 
         def extract():
             for res in fallbacks:
@@ -502,6 +520,8 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         # Post-processing
         mesh = to_trimesh(raw)
+        if len(mesh.faces) == 0:
+            raise RuntimeError("TripoSR produced an empty mesh")
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         loop = asyncio.get_event_loop()
@@ -568,7 +588,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             with torch.no_grad():
                 # Save temp image for pipeline
                 import tempfile
-                tmp = tempfile.mktemp(suffix=".png")
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_file:
+                    tmp = tmp_file.name
                 img_rgb.save(tmp)
                 try:
                     result = models["hunyuan"](image=tmp, num_inference_steps=settings.get('steps', 50))
@@ -585,6 +606,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         # Post-processing
         mesh = to_trimesh(raw_mesh)
+        if len(mesh.faces) == 0:
+            raise RuntimeError("Hunyuan3D-2 produced an empty mesh")
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         mesh = await loop.run_in_executor(None, postprocess_mesh, mesh, job_id, post_level)
@@ -648,8 +671,15 @@ async def convert(
     steps:      int  = 50,           # hunyuan diffusion steps
     post:       str  = "standard",   # none | light | standard | heavy
 ):
+    model = (model or "triposr").lower().strip()
+    if model not in {"triposr", "hunyuan"}:
+        raise HTTPException(400, "Invalid model. Use: triposr or hunyuan")
+
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "Images only")
+
+    if post not in VALID_POST_LEVELS:
+        raise HTTPException(400, "Invalid post level. Use: none, light, standard, heavy")
 
     job_id   = str(uuid.uuid4())
     ext      = Path(file.filename or "image.jpg").suffix or ".jpg"
@@ -659,13 +689,15 @@ async def convert(
 
     settings = {
         "remove_bg":  remove_bg.lower() == "true",
-        "resolution": resolution,
+        "resolution": _normalize_triposr_resolution(resolution),
         "steps":      max(5, min(100, steps)),
         "post":       post,
     }
 
     # Determine which model to use
-    if model == "hunyuan" and models["hunyuan"] is not None:
+    if model == "hunyuan":
+        if models["hunyuan"] is None:
+            raise HTTPException(503, "Hunyuan3D-2 model is not loaded. Check /health and GPU setup.")
         run_fn = run_hunyuan
         model_label = "Hunyuan3D-2"
     elif models["triposr"] is not None:

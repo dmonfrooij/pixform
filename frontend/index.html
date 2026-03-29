@@ -524,6 +524,7 @@ let removeBg = true;
 let currentJobId = null;
 let pollTimer = null;
 let history = JSON.parse(localStorage.getItem('pixform_history') || '[]');
+let hunyuanAvailable = true;
 
 // ── Quality presets ──────────────────────────────────────────────────────────
 const PRESETS = {
@@ -583,9 +584,16 @@ async function checkHealth() {
     txt.textContent = parts.join('  ·  ');
 
     if (!d.hunyuan) {
+      hunyuanAvailable = false;
       hunyuanBadge.textContent = 'NOT LOADED';
       hunyuanBadge.className = 'model-badge badge-unavail';
       hunyuanCard.style.opacity = '.5';
+      if (selectedModel === 'hunyuan') selectModel('triposr');
+    } else {
+      hunyuanAvailable = true;
+      hunyuanBadge.textContent = '~3–6 MIN';
+      hunyuanBadge.className = 'model-badge badge-quality';
+      hunyuanCard.style.opacity = '1';
     }
   } catch {
     dot.className = 'status-dot error';
@@ -623,6 +631,10 @@ function setFile(f) {
 
 // ── Model selection ───────────────────────────────────────────────────────────
 function selectModel(m) {
+  if (m === 'hunyuan' && !hunyuanAvailable) {
+    alert('Hunyuan3D-2 is not loaded yet. Check server health and GPU setup.');
+    return;
+  }
   selectedModel = m;
   document.getElementById('card-triposr').classList.toggle('selected', m === 'triposr');
   document.getElementById('card-hunyuan').classList.toggle('selected', m === 'hunyuan');
@@ -723,22 +735,18 @@ function showResult(job) {
   html += `</div>`;
 
   if (job.status === 'done') {
+    const dlBtn = (url, fmt, info) => url ? `
+        <a class="dl-btn" href="${API}${url}" download>
+          <span class="dl-fmt">${fmt}</span><span class="dl-info">${info}</span>
+        </a>` : '';
     html += `
     <div class="downloads">
       <div class="dl-label">Downloads</div>
       <div class="dl-grid">
-        <a class="dl-btn" href="${API}${job.stl_url}" download>
-          <span class="dl-fmt">STL</span><span class="dl-info">Print-ready</span>
-        </a>
-        <a class="dl-btn" href="${API}${job.tmf_url}" download>
-          <span class="dl-fmt">3MF</span><span class="dl-info">With metadata</span>
-        </a>
-        <a class="dl-btn" href="${API}${job.glb_url}" download>
-          <span class="dl-fmt">GLB</span><span class="dl-info">Textured</span>
-        </a>
-        <a class="dl-btn" href="${API}${job.obj_url}" download>
-          <span class="dl-fmt">OBJ</span><span class="dl-info">Universal</span>
-        </a>
+        ${dlBtn(job.stl_url, 'STL', 'Print-ready')}
+        ${dlBtn(job.tmf_url, '3MF', 'With metadata')}
+        ${dlBtn(job.glb_url, 'GLB', 'Textured')}
+        ${dlBtn(job.obj_url, 'OBJ', 'Universal')}
       </div>
     </div>
     <div class="stats-row">
@@ -760,7 +768,6 @@ function addHistory(id, name) {
   history.unshift({ id, name, date: new Date().toLocaleTimeString(), status: 'queued' });
   if (history.length > 8) history.pop();
   save(); renderHistory();
-applyPreset("high");
 }
 function updateHistory(job) {
   const h = history.find(x => x.id === job.job_id);
@@ -787,6 +794,7 @@ async function loadJob(id) {
   renderHistory();
 }
 renderHistory();
+applyPreset('high');
 </script>
 </body>
 </html>
