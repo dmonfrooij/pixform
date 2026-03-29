@@ -165,9 +165,9 @@ def postprocess_mesh(mesh, job_id, level="standard"):
     import trimesh.smoothing
     import numpy as _np
 
-    smooth_iters   = {"none": 0, "light": 3,  "standard": 10, "heavy": 20}.get(level, 10)
-    poisson_depth  = {"none": 9, "light": 9,  "standard": 10, "heavy": 11}.get(level, 10)
-    poisson_points = {"none": 60000, "light": 60000, "standard": 120000, "heavy": 250000}.get(level, 120000)
+    smooth_iters   = {"none": 0, "light": 5,  "standard": 15, "heavy": 25}.get(level, 15)
+    poisson_depth  = {"none": 9, "light": 10, "standard": 11, "heavy": 12}.get(level, 11)
+    poisson_points = {"none": 60000, "light": 100000, "standard": 200000, "heavy": 350000}.get(level, 200000)
 
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
@@ -216,9 +216,10 @@ def postprocess_mesh(mesh, job_id, level="standard"):
             pcd, depth=poisson_depth, width=0, scale=1.1, linear_fit=False
         )
 
-        # Very conservative trim — only remove extreme outliers (bottom 1%)
+        # Trim low-density outlier surface fragments based on quality level
+        density_trim_pct = {"none": 1, "light": 3, "standard": 5, "heavy": 8}.get(level, 5)
         dens   = _np.asarray(densities)
-        thresh = _np.percentile(dens, 1)
+        thresh = _np.percentile(dens, density_trim_pct)
         poisson_mesh.remove_vertices_by_mask(dens < thresh)
         poisson_mesh.compute_vertex_normals()
 
@@ -348,21 +349,87 @@ def _export_3mf_manual(mesh, path: Path):
 
 
 def render_preview(mesh, path: Path):
+    from PIL import Image as _Img, ImageDraw as _Draw, ImageEnhance as _Enh
+    import io as _io
+
+    # ── Attempt 1: pyrender (high quality, multi-light) ─────────────────────
+    try:
+        import pyrender
+        import trimesh
+        import numpy as _np
+
+        scene = pyrender.Scene(bg_color=[20, 20, 26, 255], ambient_light=[0.15, 0.15, 0.15])
+
+        mesh_pr = pyrender.Mesh.from_trimesh(mesh, smooth=True)
+        scene.add(mesh_pr)
+
+        # Camera — isometric-ish view from upper-front-right
+        bounds = mesh.bounds
+        center = (bounds[0] + bounds[1]) / 2.0
+        extent = (bounds[1] - bounds[0]).max()
+        dist   = extent * 2.2
+
+        camera = pyrender.PerspectiveCamera(yfov=_np.pi / 4.0, aspectRatio=1.0)
+        cam_pose = _np.eye(4)
+        cam_pose[:3, 3] = center + _np.array([dist * 0.6, dist * 0.4, dist * 0.8])
+        # Look at center
+        fwd = center - cam_pose[:3, 3]
+        fwd /= _np.linalg.norm(fwd)
+        right = _np.cross([0, 1, 0], fwd); right /= _np.linalg.norm(right)
+        up    = _np.cross(fwd, right)
+        cam_pose[:3, 0] = right
+        cam_pose[:3, 1] = up
+        cam_pose[:3, 2] = -fwd
+        scene.add(camera, pose=cam_pose)
+
+        # Key light (warm, front-right)
+        key = pyrender.DirectionalLight(color=[1.0, 0.97, 0.90], intensity=4.5)
+        scene.add(key, pose=cam_pose)
+
+        # Fill light (cool, left)
+        fill_pose = _np.eye(4)
+        fill_pose[:3, 3] = center + _np.array([-dist * 0.8, dist * 0.2, dist * 0.4])
+        fill = pyrender.DirectionalLight(color=[0.75, 0.85, 1.0], intensity=1.8)
+        scene.add(fill, pose=fill_pose)
+
+        # Rim light (back-top)
+        rim_pose = _np.eye(4)
+        rim_pose[:3, 3] = center + _np.array([0, dist * 1.2, -dist * 0.5])
+        rim = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=1.2)
+        scene.add(rim, pose=rim_pose)
+
+        r = pyrender.OffscreenRenderer(viewport_width=800, viewport_height=800)
+        color, _ = r.render(scene)
+        r.delete()
+
+        pil = _Img.fromarray(color)
+        pil = _Enh.Contrast(pil).enhance(1.25)
+        pil = _Enh.Sharpness(pil).enhance(1.2)
+        pil.save(str(path))
+        return
+    except Exception:
+        pass
+
+    # ── Attempt 2: trimesh scene renderer ────────────────────────────────────
     try:
         import trimesh
         scene = trimesh.Scene(mesh)
-        png = scene.save_image(resolution=(600, 600), background=[20, 20, 26, 255])
+        png = scene.save_image(resolution=(800, 800), background=[20, 20, 26, 255])
         if png:
-            path.write_bytes(png)
+            pil = _Img.open(_io.BytesIO(png))
+            pil = _Enh.Contrast(pil).enhance(1.25)
+            pil = _Enh.Sharpness(pil).enhance(1.2)
+            pil.save(str(path))
             return
     except Exception:
         pass
+
+    # ── Fallback: PIL placeholder ─────────────────────────────────────────────
     try:
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (600, 600), (20, 20, 26))
-        d = ImageDraw.Draw(img)
-        d.text((230, 280), "3D Model", fill=(200, 255, 80))
-        d.text((210, 305), f"{len(mesh.faces):,} faces", fill=(100, 100, 120))
+        img = _Img.new("RGB", (800, 800), (20, 20, 26))
+        d = _Draw.Draw(img)
+        d.text((310, 380), "3D Model", fill=(200, 255, 80))
+        d.text((285, 410), f"{len(mesh.faces):,} faces", fill=(120, 120, 140))
         img.save(str(path))
     except Exception:
         pass
@@ -395,6 +462,10 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             a = img_np[:, :, 3:4]
             img_np = img_np[:, :, :3] * a + 0.5 * (1.0 - a)
         img = Image.fromarray((img_np * 255.0).astype(np.uint8))
+        # Enhance contrast and sharpness so the model sees clearer edges and detail
+        from PIL import ImageEnhance
+        img = ImageEnhance.Contrast(img).enhance(1.35)
+        img = ImageEnhance.Sharpness(img).enhance(1.4)
         img = img.resize((512, 512), Image.LANCZOS)
 
         # Inference
@@ -479,6 +550,11 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             img_rgb.paste(img, mask=img.split()[3])
         else:
             img_rgb = img.convert("RGB")
+
+        # Enhance contrast and sharpness so the model sees clearer edges and detail
+        from PIL import ImageEnhance
+        img_rgb = ImageEnhance.Contrast(img_rgb).enhance(1.35)
+        img_rgb = ImageEnhance.Sharpness(img_rgb).enhance(1.4)
 
         # Resize to 512x512
         img_rgb = img_rgb.resize((512, 512), Image.LANCZOS)

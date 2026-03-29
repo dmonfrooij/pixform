@@ -59,7 +59,7 @@ Step "Installing core dependencies"
     "einops" "omegaconf>=2.3" "huggingface_hub" "transformers>=4.40" `
     "accelerate>=0.30" "diffusers>=0.27" "fastapi==0.115.5" `
     "uvicorn[standard]==0.32.1" "python-multipart==0.0.12" "pydantic>=2.0" `
-    "httpx" "rembg[gpu]" "onnxruntime-gpu" "open3d" "PyMCubes" -q
+    "httpx" "rembg[gpu]" "onnxruntime-gpu" "open3d" "PyMCubes" "pyrender" -q
 if ($LASTEXITCODE -ne 0) { Fail "Core dependencies failed" }
 OK "Core dependencies installed"
 
