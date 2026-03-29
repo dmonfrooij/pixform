@@ -13,6 +13,7 @@ Convert a single photo into a print-ready 3D model using state-of-the-art AI, ru
 ## Requirements
 
 - Windows 10/11 (64-bit)
+- macOS (Apple Silicon, M1/M2/M3) supported via MPS profile
 - [Python 3.10](https://www.python.org/downloads/release/python-31011/) — during install: **do NOT check** "Add Python to PATH"
 - [Git](https://git-scm.com/download/win)
 - NVIDIA GPU with 6+ GB VRAM + up-to-date drivers
@@ -21,12 +22,34 @@ Convert a single photo into a print-ready 3D model using state-of-the-art AI, ru
 
 ## Installation
 
+### Windows (NVIDIA or CPU)
+
 ```powershell
 git clone https://github.com/dmonfrooij/pixform.git
 cd pixform
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+.\install.ps1 -Profile auto
 ```
+
+Profiles for `install.ps1`:
+- `auto` (default): uses NVIDIA CUDA when detected, otherwise CPU
+- `nvidia`: force CUDA packages
+- `cpu`: force CPU packages
+
+### macOS (MacBook Pro / Apple Silicon)
+
+```bash
+git clone https://github.com/dmonfrooij/pixform.git
+cd pixform
+chmod +x install_mac.sh PIXFORM.sh
+./install_mac.sh mac
+```
+
+Profiles for `install_mac.sh`:
+- `mac` (default): uses Apple Metal (`mps`)
+- `nvidia`: CUDA profile (only for external CUDA setups)
+- `cpu`: force CPU
+- `auto`: chooses `mps` on macOS
 
 The installer downloads ~5–8 GB on first run (PyTorch, TripoSR, Hunyuan3D-2).
 
@@ -36,8 +59,30 @@ When you first **start** the app, Huggingface model weights are downloaded autom
 
 ## Usage
 
+### Windows
+
 ```powershell
-PIXFORM.bat
+.\PIXFORM.bat
+```
+
+Optional profile override at start:
+
+```powershell
+.\PIXFORM.bat nvidia
+.\PIXFORM.bat cpu
+```
+
+### macOS
+
+```bash
+./PIXFORM.sh
+```
+
+Optional profile override at start:
+
+```bash
+./PIXFORM.sh mac
+./PIXFORM.sh cpu
 ```
 
 Browser opens at `http://localhost:8000`
@@ -76,6 +121,12 @@ Times based on RTX 3080 Ti. If VRAM runs out, resolution automatically steps dow
 | Front or 3/4 view | Top-down or extreme angles |
 | Single object | Multiple objects |
 | Min 512×512 px | Tiny or blurry images |
+
+### Device notes
+
+- `Hunyuan3D-2` currently loads only on CUDA/NVIDIA.
+- On MacBook Pro (`mps`), `TripoSR` works; Hunyuan is disabled automatically.
+- Override device manually with env var `PIXFORM_DEVICE=auto|cuda|mps|cpu` before launch if needed.
 
 ---
 

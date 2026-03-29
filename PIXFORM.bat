@@ -8,7 +8,19 @@ if not exist "venv\Scripts\python.exe" (
     exit /b 1
 )
 
-echo Starting PIXFORM...
+set "PROFILE=%~1"
+if /I "%PROFILE%"=="nvidia" set "PIXFORM_DEVICE=cuda"
+if /I "%PROFILE%"=="cuda" set "PIXFORM_DEVICE=cuda"
+if /I "%PROFILE%"=="mac" set "PIXFORM_DEVICE=mps"
+if /I "%PROFILE%"=="mps" set "PIXFORM_DEVICE=mps"
+if /I "%PROFILE%"=="cpu" set "PIXFORM_DEVICE=cpu"
+
+if "%PIXFORM_DEVICE%"=="" (
+    if exist ".pixform_device" set /p PIXFORM_DEVICE=<.pixform_device
+)
+if "%PIXFORM_DEVICE%"=="" set "PIXFORM_DEVICE=auto"
+
+echo Starting PIXFORM (PIXFORM_DEVICE=%PIXFORM_DEVICE%)...
 start "" "venv\Scripts\python.exe" "backend\app.py"
 timeout /t 3 /nobreak >nul
 start "" "http://localhost:8000"
