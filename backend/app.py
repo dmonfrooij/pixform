@@ -634,8 +634,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         img_rgb = ImageEnhance.Contrast(img_rgb).enhance(1.35)
         img_rgb = ImageEnhance.Sharpness(img_rgb).enhance(1.4)
 
-        # Resize to 512x512
-        img_rgb = img_rgb.resize((512, 512), Image.LANCZOS)
+        # Resize to 1024x1024 for higher quality input
+        img_rgb = img_rgb.resize((1024, 1024), Image.LANCZOS)
 
         upd(job_id, progress=22, message="Generating 3D shape with Hunyuan3D-2...")
         upd(job_id, progress=25, message="This takes 2-5 minutes, please wait...")
