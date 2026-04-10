@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PIXFORMWIN — Image to 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Barlow:wght@300;400;500;600;700;900&family=Barlow+Condensed:wght@400;600;700;900&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080810;
+  --s1:#0e0e1a;
+  --s2:#14141f;
+  --s3:#1c1c2a;
+  --border:#252535;
+  --border2:#2e2e45;
+  --accent:#7fff6e;
+  --accent2:#4fc3f7;
+  --text:#eeeef5;
+  --muted:#5a5a78;
+  --muted2:#3a3a55;
+  --ok:#7fff6e;
+  --err:#ff6e6e;
+  --warn:#ffcc6e;
+}
+
+html,body{
+  height:100%;
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Barlow',sans-serif;
+  font-weight:400;
+  overflow:hidden;
+}
+
+/* Scanline overlay */
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.03) 2px,rgba(0,0,0,.03) 4px);
+}
+/* Corner decorations */
+body::after{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 60% 40% at 10% 0%, rgba(127,255,110,.04) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 60% at 90% 100%, rgba(79,195,247,.04) 0%, transparent 60%);
+}
+
+#app{position:relative;z-index:1;height:100vh;display:flex;flex-direction:column}
+
+/* ── Header ── */
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 28px;height:52px;
+  border-bottom:1px solid var(--border);
+  background:rgba(8,8,16,.92);
+  backdrop-filter:blur(20px);
+  flex-shrink:0;
+}
+.logo{
+  display:flex;align-items:baseline;gap:10px;
+}
+.logo-name{
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:22px;font-weight:900;letter-spacing:3px;
+  color:var(--accent);text-transform:uppercase;
+}
+.logo-tag{
+  font-family:'Space Mono',monospace;
+  font-size:9px;color:var(--muted);letter-spacing:2px;
+}
+.hdr-status{
+  display:flex;align-items:center;gap:8px;
+}
+.status-dot{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--muted);
+  transition:background .3s, box-shadow .3s;
+}
+.status-dot.online{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.status-dot.loading{background:var(--warn);box-shadow:0 0 8px var(--warn);animation:blink 1s infinite}
+.status-dot.error{background:var(--err);box-shadow:0 0 8px var(--err)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.status-txt{font-family:'Space Mono',monospace;font-size:10px;color:var(--muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Main layout ── */
+main{flex:1;display:grid;grid-template-columns:380px 1fr;overflow:hidden}
+
+/* ── Left panel ── */
+.panel-l{
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow-y:auto;
+  background:var(--s1);
+}
+.panel-section{padding:20px 22px;border-bottom:1px solid var(--border)}
+
+.section-label{
+  font-family:'Space Mono',monospace;font-size:9px;
+  letter-spacing:3px;color:var(--muted);text-transform:uppercase;
+  display:flex;align-items:center;gap:8px;margin-bottom:14px;
+}
+.section-label span{flex:1;height:1px;background:var(--border2)}
+.section-num{
+  font-size:8px;
+  background:var(--muted2);
+  color:var(--text);padding:1px 5px;border-radius:2px;
+}
+
+/* Drop zone */
+.drop{
+  border:1.5px dashed var(--border2);
+  border-radius:3px;padding:28px 16px;
+  text-align:center;cursor:pointer;
+  transition:all .2s;position:relative;
+  background:var(--s2);min-height:160px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+}
+.drop:hover,.drop.drag{
+  border-color:var(--accent);
+  background:rgba(127,255,110,.03);
+}
+.drop.has-img{padding:0;border-style:solid;border-color:var(--accent2);min-height:auto}
+.drop input{position:absolute;inset:0;opacity:0;cursor:pointer;z-index:2}
+.drop-icon{
+  width:44px;height:44px;border:1.5px solid var(--border2);border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  color:var(--muted);transition:all .2s;
+}
+.drop:hover .drop-icon{border-color:var(--accent);color:var(--accent)}
+.drop-title{font-size:14px;font-weight:600;color:var(--text)}
+.drop-sub{font-family:'Space Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:1px}
+.drop-preview{width:100%;max-height:220px;object-fit:contain;display:none;border-radius:2px}
+.drop-tip{
+  margin-top:10px;padding:8px 12px;
+  background:rgba(79,195,247,.06);border:1px solid rgba(79,195,247,.15);
+  border-radius:2px;font-size:11px;color:rgba(79,195,247,.8);
+  font-family:'Space Mono',monospace;line-height:1.5;
+}
+
+/* Settings */
+.settings{display:flex;flex-direction:column;gap:10px}
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.setting-lbl{font-size:12px;font-weight:500;color:var(--text)}
+.setting-sub{font-family:'Space Mono',monospace;font-size:9px;color:var(--muted);margin-top:1px}
+
+.s-select{
+  background:var(--s3);border:1px solid var(--border2);
+  color:var(--text);font-family:'Barlow',sans-serif;font-size:12px;
+  padding:7px 10px;border-radius:2px;outline:none;
+  transition:border-color .2s;cursor:pointer;min-width:130px;
+}
+.s-select:focus{border-color:var(--accent)}
+
+.toggle{
+  display:flex;align-items:center;gap:0;
+  border:1px solid var(--border2);border-radius:2px;overflow:hidden;
+}
+.toggle-btn{
+  padding:6px 12px;font-size:11px;font-weight:600;font-family:'Barlow',sans-serif;
+  cursor:pointer;border:none;background:var(--s3);color:var(--muted);
+  transition:all .15s;letter-spacing:.5px;
+}
+.toggle-btn.active{background:var(--accent);color:#080810}
+
+/* Model selector */
+.model-cards{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.model-card{
+  border:1.5px solid var(--border2);border-radius:3px;padding:12px;
+  cursor:pointer;transition:all .2s;background:var(--s2);position:relative;
+}
+.model-card:hover{border-color:var(--muted2)}
+.model-card.selected{border-color:var(--accent);background:rgba(127,255,110,.04)}
+.model-card.selected::before{
+  content:'✓';position:absolute;top:6px;right:8px;
+  font-size:9px;color:var(--accent);font-weight:700;
+}
+.model-name{font-size:13px;font-weight:700;margin-bottom:3px}
+.model-desc{font-size:10px;color:var(--muted);line-height:1.4}
+.model-badge{
+  display:inline-block;margin-top:6px;padding:2px 6px;border-radius:1px;
+  font-family:'Space Mono',monospace;font-size:8px;letter-spacing:1px;
+}
+.badge-fast{background:rgba(79,195,247,.15);color:var(--accent2)}
+.badge-quality{background:rgba(127,255,110,.15);color:var(--accent)}
+.badge-unavail{background:rgba(90,90,120,.2);color:var(--muted)}
+
+/* Generate button */
+.btn-generate{
+  width:100%;padding:16px;
+  background:var(--accent);color:#080810;
+  border:none;border-radius:2px;
+  font-family:'Barlow Condensed',sans-serif;
+  font-size:17px;font-weight:900;letter-spacing:3px;text-transform:uppercase;
+  cursor:pointer;transition:all .2s;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+}
+.btn-generate:hover:not(:disabled){background:#9dff8e;transform:translateY(-1px)}
+.btn-generate:disabled{opacity:.3;cursor:not-allowed;transform:none}
+.btn-generate.running{
+  background:transparent;color:var(--accent);
+  border:1.5px solid var(--accent);animation:pulse-border 2s infinite;
+}
+@keyframes pulse-border{0%,100%{border-color:var(--accent)}50%{border-color:var(--muted2)}}
+
+/* ── Right panel ── */
+.panel-r{
+  display:flex;flex-direction:column;
+  background:var(--bg);overflow:hidden;
+}
+
+/* Empty state */
+.empty-state{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;color:var(--muted);
+}
+.empty-graphic{
+  width:120px;height:120px;
+  border:1px solid var(--border);border-radius:4px;
+  display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;
+}
+.empty-graphic::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg, var(--s2) 25%, var(--s3) 100%);
+}
+.empty-cube{
+  position:relative;z-index:1;
+  font-size:40px;opacity:.15;
+  animation:float 4s ease-in-out infinite;
+}
+@keyframes float{0%,100%{transform:translateY(0) rotate(0deg)}50%{transform:translateY(-6px) rotate(5deg)}}
+.empty-txt{font-family:'Space Mono',monospace;font-size:11px;letter-spacing:2px;text-align:center;line-height:1.6}
+
+/* Job card */
+.result-area{flex:1;overflow-y:auto;padding:24px}
+.job-card{
+  background:var(--s1);border:1px solid var(--border);border-radius:3px;
+  overflow:hidden;animation:slideup .3s ease;max-width:700px;margin:0 auto;
+}
+@keyframes slideup{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
+.job-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+}
+.job-title{font-size:15px;font-weight:700}
+.job-meta{font-family:'Space Mono',monospace;font-size:9px;color:var(--muted);margin-top:3px}
+
+.status-badge{
+  padding:4px 10px;border-radius:2px;
+  font-family:'Space Mono',monospace;font-size:9px;letter-spacing:1px;
+  white-space:nowrap;flex-shrink:0;
+}
+.status-badge.queued{background:rgba(90,90,120,.2);color:var(--muted);border:1px solid var(--border2)}
+.status-badge.processing{background:rgba(127,255,110,.1);color:var(--accent);border:1px solid rgba(127,255,110,.25);animation:blink 2s infinite}
+.status-badge.done{background:rgba(127,255,110,.12);color:var(--accent);border:1px solid rgba(127,255,110,.3)}
+.status-badge.error{background:rgba(255,110,110,.1);color:var(--err);border:1px solid rgba(255,110,110,.25)}
+
+/* Progress */
+.progress-wrap{padding:16px 20px;border-bottom:1px solid var(--border)}
+.progress-track{height:2px;background:var(--s3);border-radius:2px;overflow:hidden;margin-bottom:8px}
+.progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .5s ease;box-shadow:0 0 8px var(--accent)}
+.progress-meta{display:flex;justify-content:space-between;font-family:'Space Mono',monospace;font-size:9px;color:var(--muted)}
+
+/* Preview */
+.preview-wrap{
+  background:var(--s2);border-bottom:1px solid var(--border);
+  aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;
+  position:relative;overflow:hidden;max-height:320px;
+}
+.preview-wrap img{width:100%;height:100%;object-fit:contain}
+.preview-spinner{
+  display:flex;flex-direction:column;align-items:center;gap:12px;color:var(--muted);
+}
+.spinner{
+  width:32px;height:32px;
+  border:2px solid var(--border2);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner-txt{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:1px}
+
+/* Downloads */
+.downloads{padding:16px 20px}
+.dl-label{font-family:'Space Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:2px;margin-bottom:10px}
+.dl-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.dl-btn{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:10px 6px;border:1px solid var(--border2);border-radius:2px;
+  background:var(--s2);color:var(--text);text-decoration:none;
+  transition:all .15s;
+}
+.dl-btn:hover{border-color:var(--accent);background:rgba(127,255,110,.04);color:var(--accent)}
+.dl-fmt{font-size:13px;font-weight:700;letter-spacing:1px}
+.dl-info{font-family:'Space Mono',monospace;font-size:8px;color:var(--muted)}
+
+/* Stats row */
+.stats-row{
+  display:flex;gap:0;border-top:1px solid var(--border);
+}
+.stat{
+  flex:1;padding:10px 14px;text-align:center;
+  border-right:1px solid var(--border);
+}
+.stat:last-child{border-right:none}
+.stat-val{font-size:15px;font-weight:700;color:var(--accent2)}
+.stat-lbl{font-family:'Space Mono',monospace;font-size:8px;color:var(--muted);letter-spacing:1px;margin-top:1px}
+
+/* Error */
+.error-box{
+  padding:16px 20px;
+  background:rgba(255,110,110,.05);border-top:1px solid rgba(255,110,110,.15);
+  font-family:'Space Mono',monospace;font-size:10px;color:var(--err);line-height:1.5;
+  word-break:break-word;
+}
+
+/* History */
+.history-section{
+  border-top:1px solid var(--border);padding:16px 22px;flex-shrink:0;
+  max-height:140px;overflow-y:auto;
+}
+.hist-label{font-family:'Space Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:2px;margin-bottom:8px}
+.hist-list{display:flex;flex-direction:column;gap:4px}
+.hist-item{
+  display:flex;align-items:center;gap:8px;padding:7px 10px;
+  border:1px solid var(--border);border-radius:2px;
+  cursor:pointer;transition:all .15s;background:var(--s2);
+}
+.hist-item:hover,.hist-item.active{border-color:var(--muted2)}
+.hist-name{font-size:11px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-date{font-family:'Space Mono',monospace;font-size:8px;color:var(--muted);flex-shrink:0}
+.hist-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.hist-dot.done{background:var(--ok)}
+.hist-dot.error{background:var(--err)}
+.hist-dot.processing,.hist-dot.queued{background:var(--warn);animation:blink 1.5s infinite}
+
+@media(max-width:780px){
+  main{grid-template-columns:1fr}
+  .panel-r{display:none}
+  body{overflow:auto}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<header>
+  <div class="logo">
+    <div class="logo-name">PIXFORMWIN</div>
+    <div class="logo-tag">IMAGE → 3D PIPELINE</div>
+  </div>
+  <div class="hdr-status">
+    <div class="status-dot loading" id="statusDot"></div>
+    <span class="status-txt" id="statusTxt">Connecting...</span>
+  </div>
+</header>
+
+<main>
+
+<!-- Left panel -->
+<div class="panel-l">
+
+  <!-- 01 Image -->
+  <div class="panel-section">
+    <div class="section-label"><span class="section-num">01</span> Image Input <span></span></div>
+    <div class="drop" id="drop">
+      <input type="file" id="fileInput" accept="image/*"/>
+      <div id="dropContent">
+        <div class="drop-icon">⬡</div>
+        <div class="drop-title">Drop image here</div>
+        <div class="drop-sub">JPG · PNG · WEBP · HEIC</div>
+        <div class="drop-tip">Best results: object on plain white or grey background, well-lit, front-facing view, min 512×512px</div>
+      </div>
+      <img id="dropPreview" class="drop-preview" alt="preview"/>
+    </div>
+  </div>
+
+  <!-- 02 Model -->
+  <div class="panel-section">
+    <div class="section-label"><span class="section-num">02</span> Model <span></span></div>
+    <div class="model-cards">
+      <div class="model-card selected" id="card-triposr" onclick="selectModel('triposr')">
+        <div class="model-name">TripoSR</div>
+        <div class="model-desc">Fast single-image reconstruction</div>
+        <span class="model-badge badge-fast">~1–3 MIN</span>
+      </div>
+      <div class="model-card" id="card-hunyuan" onclick="selectModel('hunyuan')">
+        <div class="model-name">Hunyuan3D-2</div>
+        <div class="model-desc">High-quality diffusion model</div>
+        <span class="model-badge badge-quality" id="hunyuan-badge">~3–6 MIN</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 03 Settings -->
+  <div class="panel-section">
+    <div class="section-label"><span class="section-num">03</span> Settings <span></span></div>
+    <div class="settings">
+
+      <!-- Background -->
+      <div class="setting-row">
+        <div>
+          <div class="setting-lbl">Background</div>
+          <div class="setting-sub">AI-powered removal</div>
+        </div>
+        <div class="toggle">
+          <button class="toggle-btn active" id="bg-on"  onclick="setBg(true)">REMOVE</button>
+          <button class="toggle-btn"        id="bg-off" onclick="setBg(false)">KEEP</button>
+        </div>
+      </div>
+
+      <!-- Quality preset (both models) -->
+      <div class="setting-row">
+        <div>
+          <div class="setting-lbl">Quality Preset</div>
+          <div class="setting-sub" id="quality-sub">Sets resolution &amp; detail level</div>
+        </div>
+        <select class="s-select" id="qualityPreset" onchange="applyPreset(this.value)">
+          <option value="draft">⚡ Draft — fastest</option>
+          <option value="low">🔹 Low — quick preview</option>
+          <option value="medium">🔷 Medium — balanced</option>
+          <option value="high" selected>⭐ High — recommended</option>
+          <option value="ultra">🔶 Ultra — slow</option>
+          <option value="extreme">💎 Extreme — very slow</option>
+          <option value="maximum">🔥 Maximum — ~1 hr</option>
+          <option value="custom">✏️ Custom</option>
+        </select>
+      </div>
+
+      <!-- TripoSR resolution (shown when custom or triposr) -->
+      <div class="setting-row" id="res-row" style="display:none">
+        <div>
+          <div class="setting-lbl">Mesh Resolution</div>
+          <div class="setting-sub">TripoSR voxel grid size</div>
+        </div>
+        <select class="s-select" id="resSelect">
+          <option value="128">128 — Draft</option>
+          <option value="192">192 — Low</option>
+          <option value="256">256 — Medium</option>
+          <option value="320">320 — Good</option>
+          <option value="384">384 — High</option>
+          <option value="448">448 — Very High</option>
+          <option value="512" selected>512 — Ultra</option>
+          <option value="640">640 — Extreme</option>
+          <option value="768">768 — Maximum</option>
+          <option value="1024">1024 — Insane</option>
+        </select>
+      </div>
+
+      <!-- Hunyuan steps (shown when hunyuan selected) -->
+      <div class="setting-row" id="steps-row" style="display:none">
+        <div>
+          <div class="setting-lbl">Diffusion Steps</div>
+          <div class="setting-sub">More steps = better quality</div>
+        </div>
+        <select class="s-select" id="stepsSelect">
+          <option value="10">10 — Draft (~1 min)</option>
+          <option value="20">20 — Low (~2 min)</option>
+          <option value="30">30 — Medium (~3 min)</option>
+          <option value="50" selected>50 — High (~5 min) ★</option>
+          <option value="75">75 — Ultra (~8 min)</option>
+          <option value="100">100 — Extreme (~12 min)</option>
+        </select>
+      </div>
+
+      <!-- Post-processing -->
+      <div class="setting-row">
+        <div>
+          <div class="setting-lbl">Post-Processing</div>
+          <div class="setting-sub">Smoothing &amp; print repair</div>
+        </div>
+        <select class="s-select" id="postSelect">
+          <option value="none">None — raw output</option>
+          <option value="light">Light — minimal smooth</option>
+          <option value="standard" selected>Standard — recommended</option>
+          <option value="heavy">Heavy — max smoothing</option>
+        </select>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Generate button -->
+  <div class="panel-section" style="border-bottom:none;padding-bottom:24px">
+    <button class="btn-generate" id="btnGenerate" disabled onclick="generate()">
+      <span id="btnTxt">SELECT AN IMAGE FIRST</span>
+    </button>
+  </div>
+
+  <!-- History -->
+  <div class="history-section" id="historySection" style="display:none">
+    <div class="hist-label">Recent</div>
+    <div class="hist-list" id="histList"></div>
+  </div>
+
+</div>
+
+<!-- Right panel -->
+<div class="panel-r" id="panelR">
+
+  <div class="empty-state" id="emptyState">
+    <div class="empty-graphic">
+      <div class="empty-cube">◈</div>
+    </div>
+    <div class="empty-txt">Drop an image and click<br/>Generate to create a 3D model</div>
+  </div>
+
+  <div class="result-area" id="resultArea" style="display:none">
+    <div class="job-card" id="jobCard"></div>
+  </div>
+
+</div>
+
+</main>
+</div>
+
+<script>
+const API = window.location.origin;
+let selectedFile = null;
+let selectedModel = 'triposr';
+let removeBg = true;
+let currentJobId = null;
+let pollTimer = null;
+let history = JSON.parse(localStorage.getItem('pixform_history') || '[]');
+let hunyuanAvailable = true;
+
+// ── Quality presets ──────────────────────────────────────────────────────────
+const PRESETS = {
+  //            triposr_res  hy_steps  post       label
+  draft:   { res:  128, steps: 10,  post: 'none',     info: '~10 sec / ~1 min' },
+  low:     { res:  192, steps: 20,  post: 'light',    info: '~30 sec / ~2 min' },
+  medium:  { res:  256, steps: 30,  post: 'light',    info: '~1 min / ~3 min'  },
+  high:    { res:  512, steps: 50,  post: 'standard', info: '~15 min / ~5 min' },
+  ultra:   { res:  640, steps: 75,  post: 'standard', info: '~30 min / ~8 min' },
+  extreme: { res:  768, steps: 100, post: 'heavy',    info: '~45 min / ~12 min'},
+  maximum: { res: 1024, steps: 100, post: 'heavy',    info: '~60+ min / ~15 min'},
+  custom:  null,
+};
+
+function applyPreset(key) {
+  const p = PRESETS[key];
+  const isCustom = key === 'custom';
+  // TripoSR: show resolution row (always for custom, hidden otherwise)
+  document.getElementById('res-row').style.display =
+    (selectedModel === 'triposr' && isCustom) ? '' : 'none';
+  // Hunyuan: always show steps row so user can adjust quality
+  document.getElementById('steps-row').style.display =
+    selectedModel === 'hunyuan' ? '' : 'none';
+  if (p) {
+    document.getElementById('resSelect').value   = p.res;
+    document.getElementById('stepsSelect').value = p.steps;
+    document.getElementById('postSelect').value  = p.post;
+    if (selectedModel === 'triposr') {
+      document.getElementById('quality-sub').textContent =
+        `Resolution ${p.res} · Post: ${p.post} · ${p.info.split('/')[0].trim()}`;
+    } else {
+      document.getElementById('quality-sub').textContent =
+        `${p.steps} diffusion steps · Post: ${p.post} · ${p.info.split('/')[1].trim()}`;
+    }
+  } else {
+    document.getElementById('quality-sub').textContent = 'Configure manually below';
+  }
+}
+
+// ── Health check ──────────────────────────────────────────────────────────────
+async function checkHealth() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusTxt');
+  const hunyuanBadge = document.getElementById('hunyuan-badge');
+  const hunyuanCard  = document.getElementById('card-hunyuan');
+  try {
+    const r = await fetch(`${API}/health`);
+    const d = await r.json();
+    const parts = [];
+    if (d.triposr)  parts.push('TripoSR ✓');
+    if (d.hunyuan)  parts.push('Hunyuan3D-2 ✓');
+    if (d.rembg)    parts.push('BG Removal ✓');
+    if (d.mps)      parts.push('MPS ✓');
+    if (!d.cuda)    parts.push('⚠ No GPU');
+    if (d.gpu)      parts.push(d.gpu);
+
+    dot.className = 'status-dot online';
+    txt.textContent = parts.join('  ·  ');
+
+    if (!d.hunyuan) {
+      hunyuanAvailable = false;
+      hunyuanBadge.textContent = 'NOT LOADED';
+      hunyuanBadge.className = 'model-badge badge-unavail';
+      hunyuanCard.style.opacity = '.5';
+      if (selectedModel === 'hunyuan') selectModel('triposr');
+    } else {
+      hunyuanAvailable = true;
+      hunyuanBadge.textContent = '~3–6 MIN';
+      hunyuanBadge.className = 'model-badge badge-quality';
+      hunyuanCard.style.opacity = '1';
+    }
+  } catch {
+    dot.className = 'status-dot error';
+    txt.textContent = 'Server offline — run PIXFORMWIN.bat';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 20000);
+
+// ── File handling ─────────────────────────────────────────────────────────────
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) setFile(f);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+function setFile(f) {
+  if (!f.type.startsWith('image/')) return;
+  selectedFile = f;
+  const preview = document.getElementById('dropPreview');
+  const content = document.getElementById('dropContent');
+  preview.src = URL.createObjectURL(f);
+  preview.style.display = 'block';
+  content.style.display = 'none';
+  drop.classList.add('has-img');
+  document.getElementById('btnGenerate').disabled = false;
+  document.getElementById('btnTxt').textContent = 'GENERATE 3D MODEL';
+}
+
+// ── Model selection ───────────────────────────────────────────────────────────
+function selectModel(m) {
+  if (m === 'hunyuan' && !hunyuanAvailable) {
+    alert('Hunyuan3D-2 is not loaded yet. Check server health and GPU setup.');
+    return;
+  }
+  selectedModel = m;
+  document.getElementById('card-triposr').classList.toggle('selected', m === 'triposr');
+  document.getElementById('card-hunyuan').classList.toggle('selected', m === 'hunyuan');
+  applyPreset(document.getElementById('qualityPreset').value);
+}
+
+function setBg(val) {
+  removeBg = val;
+  document.getElementById('bg-on').classList.toggle('active', val);
+  document.getElementById('bg-off').classList.toggle('active', !val);
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────────
+async function generate() {
+  if (!selectedFile) return;
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = true;
+  btn.classList.add('running');
+  document.getElementById('btnTxt').textContent = 'GENERATING...';
+
+  const resolution = document.getElementById('resSelect').value;
+  const steps      = document.getElementById('stepsSelect').value;
+  const post       = document.getElementById('postSelect').value;
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+
+  const url = `${API}/convert?model=${selectedModel}&remove_bg=${removeBg}&resolution=${resolution}&steps=${steps}&post=${post}`;
+
+  try {
+    const r = await fetch(url, { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    const job = await r.json();
+    currentJobId = job.job_id;
+    addHistory(job.job_id, selectedFile.name);
+    showResult(job);
+    poll(job.job_id);
+  } catch (e) {
+    alert('Error: ' + e.message);
+    resetBtn();
+  }
+}
+
+function resetBtn() {
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = !selectedFile;
+  btn.classList.remove('running');
+  document.getElementById('btnTxt').textContent = selectedFile ? 'GENERATE 3D MODEL' : 'SELECT AN IMAGE FIRST';
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+function poll(id) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const job = await (await fetch(`${API}/status/${id}`)).json();
+      showResult(job);
+      updateHistory(job);
+      if (job.status === 'done' || job.status === 'error') {
+        clearInterval(pollTimer);
+        resetBtn();
+      }
+    } catch {}
+  }, 1800);
+}
+
+// ── Render result card ────────────────────────────────────────────────────────
+function showResult(job) {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('resultArea').style.display = 'block';
+
+  const statusLabels = { queued: 'QUEUED', processing: 'PROCESSING', done: 'COMPLETE', error: 'ERROR' };
+  const time = job.time_taken ? `${job.time_taken}s` : '—';
+  const polys = job.poly_count ? job.poly_count.toLocaleString() : '—';
+
+  let html = `
+    <div class="job-header">
+      <div>
+        <div class="job-title">3D Generation</div>
+        <div class="job-meta">${job.job_id.slice(0,8).toUpperCase()} · ${job.model_used || '—'}</div>
+      </div>
+      <div class="status-badge ${job.status}">${statusLabels[job.status] || job.status}</div>
+    </div>`;
+
+  if (job.status !== 'done') {
+    html += `
+    <div class="progress-wrap">
+      <div class="progress-track"><div class="progress-fill" style="width:${job.progress}%"></div></div>
+      <div class="progress-meta"><span>${job.message}</span><span>${job.progress}%</span></div>
+    </div>`;
+  }
+
+  html += `<div class="preview-wrap">`;
+  if (job.preview_url) {
+    html += `<img src="${API}${job.preview_url}?t=${Date.now()}" alt="3D preview"/>`;
+  } else {
+    html += `<div class="preview-spinner"><div class="spinner"></div><div class="spinner-txt">${job.message || 'Processing...'}</div></div>`;
+  }
+  html += `</div>`;
+
+  if (job.status === 'done') {
+    const dlBtn = (url, fmt, info) => url ? `
+        <a class="dl-btn" href="${API}${url}" download>
+          <span class="dl-fmt">${fmt}</span><span class="dl-info">${info}</span>
+        </a>` : '';
+    html += `
+    <div class="downloads">
+      <div class="dl-label">Downloads</div>
+      <div class="dl-grid">
+        ${dlBtn(job.stl_url, 'STL', 'Print-ready')}
+        ${dlBtn(job.tmf_url, '3MF', 'With metadata')}
+        ${dlBtn(job.glb_url, 'GLB', 'Textured')}
+        ${dlBtn(job.obj_url, 'OBJ', 'Universal')}
+      </div>
+    </div>
+    <div class="stats-row">
+      <div class="stat"><div class="stat-val">${polys}</div><div class="stat-lbl">POLYGONS</div></div>
+      <div class="stat"><div class="stat-val">${time}</div><div class="stat-lbl">TIME</div></div>
+      <div class="stat"><div class="stat-val">${job.model_used || '—'}</div><div class="stat-lbl">MODEL</div></div>
+    </div>`;
+  }
+
+  if (job.status === 'error') {
+    html += `<div class="error-box">✕ ${job.message}</div>`;
+  }
+
+  document.getElementById('jobCard').innerHTML = html;
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+function addHistory(id, name) {
+  history.unshift({ id, name, date: new Date().toLocaleTimeString(), status: 'queued' });
+  if (history.length > 8) history.pop();
+  save(); renderHistory();
+}
+function updateHistory(job) {
+  const h = history.find(x => x.id === job.job_id);
+  if (h) { h.status = job.status; save(); renderHistory(); }
+}
+function save() { localStorage.setItem('pixform_history', JSON.stringify(history)); }
+function renderHistory() {
+  const sec = document.getElementById('historySection');
+  if (!history.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+  document.getElementById('histList').innerHTML = history.map(h => `
+    <div class="hist-item ${h.id === currentJobId ? 'active' : ''}" onclick="loadJob('${h.id}')">
+      <div class="hist-dot ${h.status}"></div>
+      <div class="hist-name">${h.name}</div>
+      <div class="hist-date">${h.date}</div>
+    </div>`).join('');
+}
+async function loadJob(id) {
+  currentJobId = id;
+  try {
+    const job = await (await fetch(`${API}/status/${id}`)).json();
+    showResult(job);
+  } catch {}
+  renderHistory();
+}
+renderHistory();
+applyPreset('high');
+</script>
+</body>
+</html>
