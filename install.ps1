@@ -141,6 +141,66 @@ if (Test-Path -LiteralPath $hy3dSrc) {
     Warn "hy3dgen folder not found"
 }
 
+# ── TRELLIS ────────────────────────────────────────────────────────────────────
+if ($runtimeDevice -eq "cuda") {
+    Step "Installing TRELLIS (best-quality model)"
+
+    # Clone TRELLIS repo
+    $trellisRepo = Join-Path $PSScriptRoot "trellis_repo"
+    if (Test-Path -LiteralPath $trellisRepo) { Remove-Item -Recurse -Force -LiteralPath $trellisRepo }
+    git clone --quiet --depth 1 https://github.com/microsoft/TRELLIS.git "$trellisRepo"
+    if (Test-Path -LiteralPath $trellisRepo) {
+        OK "TRELLIS repo cloned"
+    } else {
+        Warn "Failed to clone TRELLIS repo — skipping TRELLIS install"
+    }
+
+    if (Test-Path -LiteralPath $trellisRepo) {
+        # TRELLIS runtime dependencies
+        Info "Installing xformers (attention backend)..."
+        # xformers uses the cu124 index (matching PyTorch 2.5.1+cu124 installed above).
+        # spconv packages are named by CUDA major version: spconv-cu120 supports all CUDA 12.x including 12.4.
+        & "$PY" -m pip install xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu124 -q
+        if ($LASTEXITCODE -eq 0) { OK "xformers installed" } else { Warn "xformers failed" }
+
+        Info "Installing spconv (sparse convolutions)..."
+        & "$PY" -m pip install spconv-cu120 -q
+        if ($LASTEXITCODE -eq 0) { OK "spconv installed" } else { Warn "spconv failed" }
+
+        Info "Installing utils3d and mesh tools..."
+        & "$PY" -m pip install `
+            "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" `
+            xatlas pyvista pymeshfix igraph -q
+        if ($LASTEXITCODE -eq 0) { OK "TRELLIS mesh tools installed" } else { Warn "Some TRELLIS mesh tools failed" }
+
+        # nvdiffrast — optional, enables textured GLB export
+        Info "Trying nvdiffrast (optional — textured GLB)..."
+        $nvdiffPath = Join-Path $env:TEMP "pixform_nvdiffrast"
+        if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
+        git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
+        if (Test-Path -LiteralPath $nvdiffPath) {
+            & "$PY" -m pip install "$nvdiffPath" -q
+            if ($LASTEXITCODE -eq 0) { OK "nvdiffrast installed (textured GLB enabled)" } else { Warn "nvdiffrast failed — textured GLB will use plain mesh fallback" }
+        } else {
+            Warn "nvdiffrast clone failed — textured GLB will use plain mesh fallback"
+        }
+
+        # Copy trellis Python package to backend
+        $trellisSrc  = Join-Path $trellisRepo "trellis"
+        $trellisDest = Join-Path $backendPath "trellis"
+        if (Test-Path -LiteralPath $trellisDest) { Remove-Item -Recurse -Force -LiteralPath $trellisDest }
+        if (Test-Path -LiteralPath $trellisSrc) {
+            Copy-Item -Recurse -LiteralPath $trellisSrc -Destination $trellisDest
+            OK "TRELLIS package copied to backend"
+        } else {
+            Warn "TRELLIS trellis/ folder not found in repo"
+        }
+    }
+} else {
+    Step "Skipping TRELLIS (CUDA/NVIDIA GPU required)"
+    Warn "TRELLIS requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
+}
+
 # ── TripoSR ────────────────────────────────────────────────────────────────────
 Step "Cloning TripoSR (fast model)"
 $triposrRepo = Join-Path $PSScriptRoot "triposr_repo"
@@ -219,6 +279,15 @@ try:
         print('  hy3dgen folder: NOT FOUND')
 except Exception as e:
     print(f'  hy3dgen: FAILED - {e}')
+
+try:
+    trellis_pkg = pathlib.Path('backend/trellis')
+    if trellis_pkg.exists():
+        print(f'  TRELLIS package: found ({len(list(trellis_pkg.iterdir()))} items)')
+    else:
+        print('  TRELLIS package: not found (CUDA-only feature)')
+except Exception as e:
+    print(f'  TRELLIS: FAILED - {e}')
 
 try:
     from rembg import remove

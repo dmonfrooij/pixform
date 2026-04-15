@@ -119,8 +119,46 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
   if [[ -f backend/hy3dgen/rembg.py ]]; then
     mv backend/hy3dgen/rembg.py backend/hy3dgen/rembg_hy3d.py
   fi
+
+  echo "== Installing TRELLIS (best-quality model, CUDA profile) =="
+  rm -rf trellis_repo
+  git clone --depth 1 https://github.com/microsoft/TRELLIS.git trellis_repo
+
+  # TRELLIS core runtime dependencies
+  # xformers uses the cu124 index (matching PyTorch 2.5.1+cu124 installed above).
+  # spconv packages are named by CUDA major version: spconv-cu120 supports all CUDA 12.x including 12.4.
+  "$PY" -m pip install \
+    xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu124 || \
+    echo "[WARN] xformers install failed"
+  "$PY" -m pip install spconv-cu120 || echo "[WARN] spconv install failed"
+  "$PY" -m pip install \
+    "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" \
+    xatlas pyvista pymeshfix igraph || echo "[WARN] Some TRELLIS deps failed"
+
+  # nvdiffrast — enables textured GLB export (optional)
+  git clone https://github.com/NVlabs/nvdiffrast.git /tmp/pixform_nvdiffrast 2>/dev/null || true
+  if [[ -d /tmp/pixform_nvdiffrast ]]; then
+    "$PY" -m pip install /tmp/pixform_nvdiffrast || echo "[WARN] nvdiffrast failed — textured GLB will use fallback"
+  fi
+
+  # mip-splatting — enables Gaussian rendering for textured GLB (optional)
+  git clone https://github.com/autonomousvision/mip-splatting.git /tmp/pixform_mipsplat 2>/dev/null || true
+  if [[ -d /tmp/pixform_mipsplat/submodules/diff-gaussian-rasterization ]]; then
+    "$PY" -m pip install /tmp/pixform_mipsplat/submodules/diff-gaussian-rasterization/ || \
+      echo "[WARN] mip-splatting failed — textured GLB will use fallback"
+  fi
+
+  # Copy trellis Python package to backend
+  rm -rf backend/trellis
+  if [[ -d trellis_repo/trellis ]]; then
+    cp -R trellis_repo/trellis backend/trellis
+    echo "[OK] TRELLIS copied to backend"
+  else
+    echo "[WARN] TRELLIS trellis/ folder not found in repo"
+  fi
 else
   echo "== Skipping Hunyuan3D-2 clone for non-CUDA profile =="
+  echo "== Skipping TRELLIS clone for non-CUDA profile =="
 fi
 
 echo "== Final pinning =="
@@ -140,6 +178,12 @@ print('NumPy', np.__version__)
 print('OpenCV', cv2.__version__)
 print('CUDA available:', torch.cuda.is_available())
 print('MPS available:', bool(getattr(torch.backends, 'mps', None)) and torch.backends.mps.is_available())
+import pathlib
+trellis_path = pathlib.Path('backend/trellis')
+if trellis_path.exists():
+    print('TRELLIS package: found')
+else:
+    print('TRELLIS package: not found (CUDA-only feature)')
 PY
 
 echo ""
