@@ -1020,13 +1020,21 @@ app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
+    encodings = ("utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be")
     for candidate in [
         BASE_DIR.parent / "frontend" / "index.html",
         BASE_DIR.parent / "index.html",
         Path.cwd() / "frontend" / "index.html",
     ]:
         if candidate.exists():
-            return candidate.read_text(encoding="utf-8")
+            for enc in encodings:
+                try:
+                    return candidate.read_text(encoding=enc)
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    logger.warning(f"Failed reading frontend file {candidate} with {enc}: {e}")
+                    break
     return HTMLResponse("<h1>PIXFORM</h1><p><a href='/docs'>API docs</a></p>")
 
 

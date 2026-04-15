@@ -14,8 +14,6 @@
 # limitations under the License.
 import torch
 from .tables import *
-
-# Kaolin fallback - check_tensor is only used for validation
 try:
     from kaolin.utils.testing import check_tensor
 except ImportError:

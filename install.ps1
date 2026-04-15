@@ -36,7 +36,7 @@ function Try-EnableMSVCFromVSBuildTools {
         $vsDevCmd = Join-Path $installPath "Common7\Tools\VsDevCmd.bat"
         if (-not (Test-Path -LiteralPath $vsDevCmd)) { return $false }
 
-        $dump = & cmd /c "\"$vsDevCmd\" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+        $dump = & cmd /d /s /c "`"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
         foreach ($line in $dump) {
             if ($line -match "^([^=]+)=(.*)$") {
                 [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
