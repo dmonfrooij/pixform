@@ -14,6 +14,49 @@ function Warn($m)  { Write-Host "  [!]  $m" -ForegroundColor Yellow }
 function Fail($m)  { Write-Host "`n  [ERROR] $m" -ForegroundColor Red; Read-Host "Press Enter to exit"; exit 1 }
 function Info($m)  { Write-Host "  $m" -ForegroundColor Gray }
 
+function Stop-VenvPythonProcesses($venvPath) {
+    $venvPython = Join-Path $venvPath "Scripts\python.exe"
+    $venvPrefix = ($venvPath.TrimEnd('\\') + '\\').ToLowerInvariant()
+    try {
+        $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction Stop |
+            Where-Object {
+                $_.ExecutablePath -and (
+                    $_.ExecutablePath.ToLowerInvariant() -eq $venvPython.ToLowerInvariant() -or
+                    $_.ExecutablePath.ToLowerInvariant().StartsWith($venvPrefix)
+                )
+            }
+        foreach ($p in $procs) {
+            Warn "Stopping running venv Python process (PID $($p.ProcessId))"
+            try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop } catch {}
+        }
+        if ($procs) { Start-Sleep -Seconds 1 }
+    } catch {
+        Warn "Could not inspect running Python processes: $($_.Exception.Message)"
+    }
+}
+
+function Remove-PathSafely($path, $label) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            Remove-Item -Recurse -Force -LiteralPath $path -ErrorAction Stop
+            return
+        } catch {
+            Warn "Failed to remove $label (attempt $($i + 1)/3): $($_.Exception.Message)"
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    $stalePath = "$path.stale.$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+    try {
+        Rename-Item -LiteralPath $path -NewName (Split-Path -Leaf $stalePath) -ErrorAction Stop
+        Warn "$label was locked; moved to $(Split-Path -Leaf $stalePath)"
+    } catch {
+        Fail "Could not clean locked $label. Close running PIXFORM/Python processes and retry. Details: $($_.Exception.Message)"
+    }
+}
+
 Clear-Host
 Write-Host "  PIXFORM - Image to 3D Pipeline" -ForegroundColor Yellow
 Write-Host "  Installing..." -ForegroundColor Gray
@@ -61,7 +104,10 @@ Info "Install profile: $Profile (runtime device target: $runtimeDevice)"
 # ── Virtual environment ────────────────────────────────────────────────────────
 Step "Creating virtual environment"
 $venvPath = Join-Path $PSScriptRoot "venv"
-if (Test-Path -LiteralPath $venvPath) { Remove-Item -Recurse -Force -LiteralPath $venvPath }
+if (Test-Path -LiteralPath $venvPath) {
+    Stop-VenvPythonProcesses $venvPath
+    Remove-PathSafely $venvPath "existing venv"
+}
 & $pyCmd @pyArgs -m venv "$venvPath"
 $PY = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $PY)) { Fail "Failed to create venv" }
@@ -152,15 +198,15 @@ if ($runtimeDevice -eq "cuda") {
     if (Test-Path -LiteralPath $trellisRepo) {
         OK "TRELLIS repo cloned"
     } else {
-        Warn "Failed to clone TRELLIS repo — skipping TRELLIS install"
+        Warn "Failed to clone TRELLIS repo - skipping TRELLIS install"
     }
 
     if (Test-Path -LiteralPath $trellisRepo) {
         # TRELLIS runtime dependencies
         Info "Installing xformers (attention backend)..."
-        # xformers uses the cu124 index (matching PyTorch 2.5.1+cu124 installed above).
+        # xformers 0.0.28.post3 matches torch 2.5.1 on the cu124 index.
         # spconv packages are named by CUDA major version: spconv-cu120 supports all CUDA 12.x including 12.4.
-        & "$PY" -m pip install xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu124 -q
+        & "$PY" -m pip install xformers==0.0.28.post3 --index-url https://download.pytorch.org/whl/cu124 -q
         if ($LASTEXITCODE -eq 0) { OK "xformers installed" } else { Warn "xformers failed" }
 
         Info "Installing spconv (sparse convolutions)..."
@@ -173,16 +219,21 @@ if ($runtimeDevice -eq "cuda") {
             xatlas pyvista pymeshfix igraph -q
         if ($LASTEXITCODE -eq 0) { OK "TRELLIS mesh tools installed" } else { Warn "Some TRELLIS mesh tools failed" }
 
-        # nvdiffrast — optional, enables textured GLB export
-        Info "Trying nvdiffrast (optional — textured GLB)..."
+        # nvdiffrast - optional, enables textured GLB export
+        Info "Trying nvdiffrast (optional - textured GLB)..."
         $nvdiffPath = Join-Path $env:TEMP "pixform_nvdiffrast"
-        if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
-        git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
-        if (Test-Path -LiteralPath $nvdiffPath) {
-            & "$PY" -m pip install "$nvdiffPath" -q
-            if ($LASTEXITCODE -eq 0) { OK "nvdiffrast installed (textured GLB enabled)" } else { Warn "nvdiffrast failed — textured GLB will use plain mesh fallback" }
+        $hasNvcc = $null -ne (Get-Command nvcc -ErrorAction SilentlyContinue)
+        if (-not $hasNvcc) {
+            Warn "CUDA toolkit (nvcc) not found - skipping nvdiffrast; textured GLB will use plain mesh fallback"
         } else {
-            Warn "nvdiffrast clone failed — textured GLB will use plain mesh fallback"
+            if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
+            git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
+            if (Test-Path -LiteralPath $nvdiffPath) {
+                & "$PY" -m pip install --no-build-isolation "$nvdiffPath" -q
+                if ($LASTEXITCODE -eq 0) { OK "nvdiffrast installed (textured GLB enabled)" } else { Warn "nvdiffrast failed - textured GLB will use plain mesh fallback" }
+            } else {
+                Warn "nvdiffrast clone failed - textured GLB will use plain mesh fallback"
+            }
         }
 
         # Copy trellis Python package to backend
