@@ -125,10 +125,10 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
   git clone --depth 1 https://github.com/microsoft/TRELLIS.git trellis_repo
 
   # TRELLIS core runtime dependencies
-  # xformers uses the cu124 index (matching PyTorch 2.5.1+cu124 installed above).
+  # xformers 0.0.28.post3 matches torch 2.5.1 on the cu124 index.
   # spconv packages are named by CUDA major version: spconv-cu120 supports all CUDA 12.x including 12.4.
   "$PY" -m pip install \
-    xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu124 || \
+    xformers==0.0.28.post3 --index-url https://download.pytorch.org/whl/cu124 || \
     echo "[WARN] xformers install failed"
   "$PY" -m pip install spconv-cu120 || echo "[WARN] spconv install failed"
   "$PY" -m pip install \
@@ -138,7 +138,7 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
   # nvdiffrast — enables textured GLB export (optional)
   git clone https://github.com/NVlabs/nvdiffrast.git /tmp/pixform_nvdiffrast 2>/dev/null || true
   if [[ -d /tmp/pixform_nvdiffrast ]]; then
-    "$PY" -m pip install /tmp/pixform_nvdiffrast || echo "[WARN] nvdiffrast failed — textured GLB will use fallback"
+    "$PY" -m pip install --no-build-isolation /tmp/pixform_nvdiffrast || echo "[WARN] nvdiffrast failed — textured GLB will use fallback"
   fi
 
   # mip-splatting — enables Gaussian rendering for textured GLB (optional)
