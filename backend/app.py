@@ -108,6 +108,27 @@ def set_model_health(name: str, status: str, error: Optional[str] = None):
         model_health[name]["error"] = error
 
 
+def _format_model_load_error(model_name: str, exc: Exception) -> str:
+    """Return concise, actionable load errors for UI health cards."""
+    raw = str(exc)
+    low = raw.lower()
+    hf_access_markers = (
+        "cannot access gated repo",
+        "gated repo",
+        "access to model",
+        "please log in",
+        "401",
+        "unauthorized",
+    )
+    if any(marker in low for marker in hf_access_markers):
+        return (
+            f"{model_name} could not access a gated model dependency. "
+            "Open-source fallback should be used automatically; if loading still fails, "
+            "check /health details for the remaining missing dependency."
+        )
+    return raw
+
+
 # ÔöÇÔöÇ Model loading ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 def load_all_models():
@@ -213,6 +234,13 @@ def load_all_models():
         if "spconv" in dep_name:
             set_model_health("trellis", "failed", "Missing: spconv (sparse convolutions)")
             logger.warning("TRELLIS failed to load: Missing spconv - ensure it was installed during setup")
+        elif "kaolin" in dep_name:
+            set_model_health(
+                "trellis",
+                "failed",
+                "Missing: kaolin (or failed flexicubes fallback patch in install.ps1)",
+            )
+            logger.warning("TRELLIS failed to load: Missing kaolin and no fallback patch detected")
         elif "easydict" in dep_name:
             set_model_health("trellis", "failed", "Missing: easydict")
             logger.warning("TRELLIS failed to load: Missing easydict")
@@ -220,7 +248,7 @@ def load_all_models():
             set_model_health("trellis", "failed", str(e))
             logger.warning(f"TRELLIS failed to load: {e}")
     except Exception as e:
-        set_model_health("trellis", "failed", str(e))
+        set_model_health("trellis", "failed", _format_model_load_error("TRELLIS", e))
         logger.warning(f"TRELLIS failed to load: {e}")
 
     # TRELLIS.2 (CUDA-only, requires cumesh + flex_gemm + o_voxel + spconv)
@@ -248,10 +276,10 @@ def load_all_models():
         set_model_health("trellis2", "loaded")
         logger.info("✅ TRELLIS.2 loaded")
     except ImportError as e:
-        set_model_health("trellis2", "failed", str(e))
+        set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
         logger.warning(f"TRELLIS.2 failed to load: {e}")
     except Exception as e:
-        set_model_health("trellis2", "failed", str(e))
+        set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
         logger.warning(f"TRELLIS.2 failed to load: {e}")
 
 

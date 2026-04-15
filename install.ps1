@@ -52,15 +52,22 @@ function Try-EnableMSVCFromVSBuildTools {
 
 function Patch-TrellisFlexicubes($pythonExe, $targetPath) {
     if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
-    & "$pythonExe" -c @'
+    $patchScript = Join-Path $env:TEMP "pixform_patch_flexicubes.py"
+    @'
 from pathlib import Path
+import ast
 import sys
 
 p = Path(sys.argv[1])
 txt = p.read_text(encoding="utf-8")
-if "from kaolin.utils.testing import check_tensor" not in txt:
-    print("  flexicubes.py already patched")
-    raise SystemExit(0)
+needle = "from kaolin.utils.testing import check_tensor"
+
+if needle not in txt:
+    if "from kaolin.testing import check_tensor" in txt or "def check_tensor(tensor, shape, throw=False):" in txt:
+        print("  flexicubes.py already patched")
+        raise SystemExit(0)
+    print("  flexicubes.py patch skipped: expected kaolin import not found")
+    raise SystemExit(2)
 
 new_import = '''try:
     from kaolin.utils.testing import check_tensor
@@ -83,11 +90,60 @@ except ImportError:
             return ok
 '''
 
-txt = txt.replace("from kaolin.utils.testing import check_tensor", new_import, 1)
-p.write_text(txt, encoding="utf-8")
+patched = txt.replace(needle, new_import, 1)
+ast.parse(patched)
+p.write_text(patched, encoding="utf-8")
 print("  flexicubes.py patched (kaolin fallback)")
-'@ "$targetPath"
-    return ($LASTEXITCODE -eq 0)
+'@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
+
+    & "$pythonExe" "$patchScript" "$targetPath"
+    $exitCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $patchScript -Force -ErrorAction SilentlyContinue
+    return ($exitCode -eq 0)
+}
+
+function Patch-Trellis2ImageExtractorForOSS($pythonExe, $targetPath) {
+    if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
+    $patchScript = Join-Path $env:TEMP "pixform_patch_trellis2_image_extractor.py"
+    @'
+from pathlib import Path
+import ast
+import sys
+
+p = Path(sys.argv[1])
+txt = p.read_text(encoding="utf-8")
+
+if "self.backend = \"dinov3\"" in txt and "Falling back to open DINOv2" in txt:
+    print("  trellis2 image_feature_extractor.py already patched")
+    raise SystemExit(0)
+
+if "from transformers import DINOv3ViTModel" in txt and "import logging" not in txt:
+    txt = txt.replace("from transformers import DINOv3ViTModel\n", "from transformers import DINOv3ViTModel\nimport logging\n", 1)
+
+if "logger = logging.getLogger(\"pixform\")" not in txt:
+    marker = "from PIL import Image\n\n"
+    if marker in txt:
+        txt = txt.replace(marker, "from PIL import Image\n\n\nlogger = logging.getLogger(\"pixform\")\n\n", 1)
+
+old_init = """    def __init__(self, model_name: str, image_size=512):\n        self.model_name = model_name\n        self.model = DINOv3ViTModel.from_pretrained(model_name)\n        self.model.eval()\n"""
+new_init = """    def __init__(self, model_name: str, image_size=512):\n        self.model_name = model_name\n        self.backend = \"dinov3\"\n        try:\n            self.model = DINOv3ViTModel.from_pretrained(model_name)\n        except Exception as e:\n            # Fallback to public DINOv2 when DINOv3 weights are gated/unavailable.\n            self.backend = \"dinov2\"\n            fallback_name = \"dinov2_vitl14_reg\"\n            logger.warning(\n                \"DINOv3 load failed (%s). Falling back to open DINOv2 (%s).\",\n                e,\n                fallback_name,\n            )\n            self.model = torch.hub.load(\"facebookresearch/dinov2\", fallback_name, pretrained=True)\n        self.model.eval()\n"""
+if old_init in txt:
+    txt = txt.replace(old_init, new_init, 1)
+
+old_extract = """    def extract_features(self, image: torch.Tensor) -> torch.Tensor:\n        image = image.to(self.model.embeddings.patch_embeddings.weight.dtype)\n"""
+new_extract = """    def extract_features(self, image: torch.Tensor) -> torch.Tensor:\n        if self.backend == \"dinov2\":\n            features = self.model(image, is_training=True)[\"x_prenorm\"]\n            return F.layer_norm(features, features.shape[-1:])\n        image = image.to(self.model.embeddings.patch_embeddings.weight.dtype)\n"""
+if old_extract in txt:
+    txt = txt.replace(old_extract, new_extract, 1)
+
+ast.parse(txt)
+p.write_text(txt, encoding="utf-8")
+print("  trellis2 image_feature_extractor.py patched (open-source fallback)")
+'@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
+
+    & "$pythonExe" "$patchScript" "$targetPath"
+    $exitCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $patchScript -Force -ErrorAction SilentlyContinue
+    return ($exitCode -eq 0)
 }
 
 function Patch-OVoxelSetupForWindows($targetPath) {
@@ -382,6 +438,7 @@ if (Test-Path -LiteralPath $hy3dSrc) {
 # ── TRELLIS ────────────────────────────────────────────────────────────────────
 if ($runtimeDevice -eq "cuda") {
     Step "Installing TRELLIS (best-quality model)"
+    Info "TRELLIS uses open DINOv2 dependencies. TRELLIS.2 can fall back to open DINOv2 if DINOv3 access is unavailable."
 
     # Clone TRELLIS repo
     $trellisRepo = Join-Path $PSScriptRoot "trellis_repo"
@@ -572,6 +629,12 @@ if ($runtimeDevice -eq "cuda") {
         if (Test-Path -LiteralPath $trellis2Src) {
             Copy-Item -Recurse -LiteralPath $trellis2Src -Destination $trellis2Dest
             OK "TRELLIS.2 package copied to backend"
+            $t2Extractor = Join-Path $trellis2Dest "modules\image_feature_extractor.py"
+            if (Patch-Trellis2ImageExtractorForOSS "$PY" "$t2Extractor") {
+                OK "TRELLIS.2 open-source DINO fallback applied"
+            } else {
+                Warn "Could not patch TRELLIS.2 image feature extractor for open-source fallback"
+            }
         } else {
             Warn "TRELLIS.2 package not found in repo"
         }

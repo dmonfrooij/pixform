@@ -3,8 +3,12 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from transformers import DINOv3ViTModel
+import logging
 import numpy as np
 from PIL import Image
+
+
+logger = logging.getLogger("pixform")
 
 
 class DinoV2FeatureExtractor:
@@ -62,7 +66,19 @@ class DinoV3FeatureExtractor:
     """
     def __init__(self, model_name: str, image_size=512):
         self.model_name = model_name
-        self.model = DINOv3ViTModel.from_pretrained(model_name)
+        self.backend = "dinov3"
+        try:
+            self.model = DINOv3ViTModel.from_pretrained(model_name)
+        except Exception as e:
+            # Fallback to public DINOv2 when DINOv3 weights are gated/unavailable.
+            self.backend = "dinov2"
+            fallback_name = "dinov2_vitl14_reg"
+            logger.warning(
+                "DINOv3 load failed (%s). Falling back to open DINOv2 (%s).",
+                e,
+                fallback_name,
+            )
+            self.model = torch.hub.load("facebookresearch/dinov2", fallback_name, pretrained=True)
         self.model.eval()
         self.image_size = image_size
         self.transform = transforms.Compose([
@@ -79,6 +95,9 @@ class DinoV3FeatureExtractor:
         self.model.cpu()
 
     def extract_features(self, image: torch.Tensor) -> torch.Tensor:
+        if self.backend == "dinov2":
+            features = self.model(image, is_training=True)["x_prenorm"]
+            return F.layer_norm(features, features.shape[-1:])
         image = image.to(self.model.embeddings.patch_embeddings.weight.dtype)
         hidden_states = self.model.embeddings(image, bool_masked_pos=None)
         position_embeddings = self.model.rope_embeddings(image)

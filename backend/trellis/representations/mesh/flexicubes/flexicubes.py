@@ -14,7 +14,25 @@
 # limitations under the License.
 import torch
 from .tables import *
-from kaolin.utils.testing import check_tensor
+try:
+    from kaolin.utils.testing import check_tensor
+except ImportError:
+    try:
+        from kaolin.testing import check_tensor
+    except ImportError:
+        def check_tensor(tensor, shape, throw=False):
+            ok = torch.is_tensor(tensor)
+            if ok and shape is not None:
+                if tensor.dim() != len(shape):
+                    ok = False
+                else:
+                    for actual, expected in zip(tensor.shape, shape):
+                        if expected is not None and actual != expected:
+                            ok = False
+                            break
+            if throw and not ok:
+                raise ValueError("Tensor does not match expected shape")
+            return ok
 
 __all__ = [
     'FlexiCubes'
