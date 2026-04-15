@@ -36,7 +36,8 @@ function Try-EnableMSVCFromVSBuildTools {
         $vsDevCmd = Join-Path $installPath "Common7\Tools\VsDevCmd.bat"
         if (-not (Test-Path -LiteralPath $vsDevCmd)) { return $false }
 
-        $dump = & cmd /d /s /c "`"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+        $cmdLine = ('call "{0}" -no_logo -arch=x64 -host_arch=x64 >nul && set' -f $vsDevCmd)
+        $dump = & cmd /d /s /c $cmdLine
         foreach ($line in $dump) {
             if ($line -match "^([^=]+)=(.*)$") {
                 [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
@@ -47,6 +48,162 @@ function Try-EnableMSVCFromVSBuildTools {
         Warn "Could not import VS Build Tools environment: $($_.Exception.Message)"
         return $false
     }
+}
+
+function Patch-TrellisFlexicubes($pythonExe, $targetPath) {
+    if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
+    & "$pythonExe" -c @'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+txt = p.read_text(encoding="utf-8")
+if "from kaolin.utils.testing import check_tensor" not in txt:
+    print("  flexicubes.py already patched")
+    raise SystemExit(0)
+
+new_import = '''try:
+    from kaolin.utils.testing import check_tensor
+except ImportError:
+    try:
+        from kaolin.testing import check_tensor
+    except ImportError:
+        def check_tensor(tensor, shape, throw=False):
+            ok = torch.is_tensor(tensor)
+            if ok and shape is not None:
+                if tensor.dim() != len(shape):
+                    ok = False
+                else:
+                    for actual, expected in zip(tensor.shape, shape):
+                        if expected is not None and actual != expected:
+                            ok = False
+                            break
+            if throw and not ok:
+                raise ValueError("Tensor does not match expected shape")
+            return ok
+'''
+
+txt = txt.replace("from kaolin.utils.testing import check_tensor", new_import, 1)
+p.write_text(txt, encoding="utf-8")
+print("  flexicubes.py patched (kaolin fallback)")
+'@ "$targetPath"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Patch-OVoxelSetupForWindows($targetPath) {
+    if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
+    $content = @'
+from setuptools import setup
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension, IS_HIP_EXTENSION
+import os
+import platform
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+BUILD_TARGET = os.environ.get("BUILD_TARGET", "auto")
+IS_WINDOWS = platform.system() == "Windows"
+
+if BUILD_TARGET == "auto":
+    if IS_HIP_EXTENSION:
+        IS_HIP = True
+    else:
+        IS_HIP = False
+else:
+    if BUILD_TARGET == "cuda":
+        IS_HIP = False
+    elif BUILD_TARGET == "rocm":
+        IS_HIP = True
+    else:
+        raise ValueError(f"Invalid BUILD_TARGET={BUILD_TARGET}")
+
+if not IS_HIP:
+    cc_flag = ["-allow-unsupported-compiler"] if IS_WINDOWS else []
+else:
+    archs = os.getenv("GPU_ARCHS", "native").split(";")
+    cc_flag = [f"--offload-arch={arch}" for arch in archs]
+
+if IS_WINDOWS:
+    extra_compile_args = {
+        "cxx": ["/O2", "/std:c++17", "/EHsc", "/permissive-", "/Zc:__cplusplus"],
+        "nvcc": [
+            "-O3",
+            "-std=c++17",
+            "--extended-lambda",
+            "--expt-relaxed-constexpr",
+            "-Xcompiler=/std:c++17",
+            "-Xcompiler=/EHsc",
+            "-Xcompiler=/permissive-",
+            "-Xcompiler=/Zc:__cplusplus",
+        ] + cc_flag,
+    }
+else:
+    extra_compile_args = {
+        "cxx": ["-O3", "-std=c++17"],
+        "nvcc": ["-O3", "-std=c++17"] + cc_flag,
+    }
+
+setup(
+    name="o_voxel",
+    packages=[
+        'o_voxel',
+        'o_voxel.convert',
+        'o_voxel.io',
+    ],
+    ext_modules=[
+        CUDAExtension(
+            name="o_voxel._C",
+            sources=[
+                "src/hash/hash.cu",
+                "src/convert/flexible_dual_grid.cpp",
+                "src/convert/volumetic_attr.cpp",
+                "src/serialize/api.cu",
+                "src/serialize/hilbert.cu",
+                "src/serialize/z_order.cu",
+                "src/io/svo.cpp",
+                "src/io/filter_parent.cpp",
+                "src/io/filter_neighbor.cpp",
+                "src/rasterize/rasterize.cu",
+                "src/ext.cpp",
+            ],
+            include_dirs=[
+                os.path.join(ROOT, "third_party/eigen"),
+            ],
+            extra_compile_args=extra_compile_args,
+        )
+    ],
+    cmdclass={
+        'build_ext': BuildExtension
+    }
+)
+'@
+    Set-Content -LiteralPath $targetPath -Value $content -Encoding UTF8
+    return $true
+}
+
+function Install-GitCudaPackage($displayName, $repoUrl, $pythonExe, $tempRoot) {
+    if (-not (Test-Path -LiteralPath $tempRoot)) {
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+    }
+    $srcDir = Join-Path $tempRoot ($displayName -replace '[^A-Za-z0-9_.-]', '_')
+    if (Test-Path -LiteralPath $srcDir) { Remove-Item -Recurse -Force -LiteralPath $srcDir }
+
+    Info "Installing $displayName..."
+    git clone --quiet --depth 1 --recurse-submodules "$repoUrl" "$srcDir"
+    if (Test-Path -LiteralPath $srcDir) {
+        git -C "$srcDir" submodule update --init --recursive --depth 1 2>$null | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $srcDir)) {
+        Warn "$displayName clone failed"
+        return $false
+    }
+
+    & "$pythonExe" -m pip install --no-build-isolation "$srcDir" -q
+    if ($LASTEXITCODE -eq 0) {
+        OK "$displayName installed"
+        return $true
+    }
+
+    Warn "$displayName build failed - see output above."
+    return $false
 }
 
 function Stop-VenvPythonProcesses($venvPath) {
@@ -294,39 +451,12 @@ if ($runtimeDevice -eq "cuda") {
         if (Test-Path -LiteralPath $trellisSrc) {
             Copy-Item -Recurse -LiteralPath $trellisSrc -Destination $trellisDest
             OK "TRELLIS package copied to backend"
-            & "$PY" -c @'
-from pathlib import Path
-
-# Patch flexicubes.py to work without kaolin
-p = Path("backend/trellis/representations/mesh/flexicubes/flexicubes.py")
-if p.exists():
-    txt = p.read_text(encoding="utf-8")
-    if "from kaolin.utils.testing import check_tensor" in txt:
-        new_import = '''try:
-    from kaolin.utils.testing import check_tensor
-except ImportError:
-    try:
-        from kaolin.testing import check_tensor
-    except ImportError:
-        import torch
-        def check_tensor(tensor, shape, throw=False):
-            ok = torch.is_tensor(tensor)
-            if ok and shape is not None:
-                if tensor.dim() != len(shape):
-                    ok = False
-                else:
-                    for actual, expected in zip(tensor.shape, shape):
-                        if expected is not None and actual != expected:
-                            ok = False
-                            break
-            if throw and not ok:
-                raise ValueError("Tensor does not match expected shape")
-            return ok
-'''
-        txt = txt.replace("from kaolin.utils.testing import check_tensor", new_import, 1)
-        p.write_text(txt, encoding="utf-8")
-        print("  flexicubes.py patched (kaolin fallback)")
-'@
+            $flexicubesPath = Join-Path $trellisDest "representations\mesh\flexicubes\flexicubes.py"
+            if (Patch-TrellisFlexicubes "$PY" "$flexicubesPath") {
+                OK "TRELLIS kaolin fallback applied"
+            } else {
+                Warn "Could not patch TRELLIS flexicubes.py for kaolin fallback"
+            }
         } else {
             Warn "TRELLIS trellis/ folder not found in repo"
         }
@@ -349,16 +479,23 @@ if ($runtimeDevice -eq "cuda") {
         Info "Installing TRELLIS.2 core dependencies..."
         & "$PY" -m pip install `
             imageio imageio-ffmpeg tqdm easydict opencv-python-headless ninja trimesh `
-            transformers "gradio==6.0.1" tensorboard pandas lpips zstandard kornia timm -q
+            transformers "gradio==6.0.1" tensorboard pandas lpips zstandard kornia timm `
+            "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" -q
         if ($LASTEXITCODE -eq 0) { OK "TRELLIS.2 core dependencies installed" } else { Warn "Some TRELLIS.2 core dependencies failed" }
 
         $oVoxelPath = Join-Path $trellis2Repo "o-voxel"
         if (Test-Path -LiteralPath $oVoxelPath) {
-            Info "Installing o-voxel package (requires MSVC + CUDA Toolkit)..."
+            Info "Installing TRELLIS.2 native packages (CuMesh, FlexGEMM, o-voxel)..."
 
             # Put venv\Scripts first so the pip-installed ninja.exe is found by torch's BuildExtension
             $origPath = $env:PATH
+            $origDistutilsUseSdk = $env:DISTUTILS_USE_SDK
+            $origMsSdk = $env:MSSdk
             $env:PATH = "$venvPath\Scripts;$env:PATH"
+            $origBuildTarget = $env:BUILD_TARGET
+            $env:BUILD_TARGET = "cuda"
+            $env:DISTUTILS_USE_SDK = "1"
+            $env:MSSdk = "1"
 
             # Pre-flight: check for MSVC (cl.exe) and nvcc (CUDA Toolkit developer headers)
             $hasCl   = $null -ne (Get-Command cl   -ErrorAction SilentlyContinue)
@@ -389,15 +526,41 @@ if ($runtimeDevice -eq "cuda") {
                 Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
                 Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
                 Warn "  `$env:Path = `"`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path`""
-                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
+                Warn "Skipping TRELLIS.2 native deps - TRELLIS.2 will be disabled."
             } else {
+                $nativeTempRoot = Join-Path $env:TEMP "pixform_trellis2_native"
+                $null = Install-GitCudaPackage "CuMesh" "https://github.com/JeffreyXiang/CuMesh.git" "$PY" "$nativeTempRoot"
+                $null = Install-GitCudaPackage "FlexGEMM" "https://github.com/JeffreyXiang/FlexGEMM.git" "$PY" "$nativeTempRoot"
+
+                $oVoxelSetup = Join-Path $oVoxelPath "setup.py"
+                if (Patch-OVoxelSetupForWindows "$oVoxelSetup") {
+                    OK "o-voxel setup.py patched for Windows"
+                } else {
+                    Warn "Could not patch o-voxel setup.py for Windows"
+                }
+
                 & "$PY" -m pip install --no-build-isolation "$oVoxelPath" -q
                 if ($LASTEXITCODE -eq 0) { OK "o-voxel installed" } else {
                     Warn "o-voxel build failed - see output above."
-                    Warn "TRELLIS.2 will be disabled. Ensure VS Build Tools and CUDA Toolkit are installed."
+                    Warn "TRELLIS.2 may remain disabled until MSVC/CUDA build issues are resolved."
                 }
             }
 
+            if ($null -eq $origBuildTarget) {
+                Remove-Item Env:BUILD_TARGET -ErrorAction SilentlyContinue
+            } else {
+                $env:BUILD_TARGET = $origBuildTarget
+            }
+            if ($null -eq $origDistutilsUseSdk) {
+                Remove-Item Env:DISTUTILS_USE_SDK -ErrorAction SilentlyContinue
+            } else {
+                $env:DISTUTILS_USE_SDK = $origDistutilsUseSdk
+            }
+            if ($null -eq $origMsSdk) {
+                Remove-Item Env:MSSdk -ErrorAction SilentlyContinue
+            } else {
+                $env:MSSdk = $origMsSdk
+            }
             $env:PATH = $origPath
         } else {
             Warn "TRELLIS.2 o-voxel folder not found"
@@ -521,11 +684,15 @@ try:
     if trellis2_pkg.exists():
         print(f'  TRELLIS.2 package: found ({len(list(trellis2_pkg.iterdir()))} items)')
         import importlib.util
+        import os
         missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
         if missing:
             missing_str = ', '.join(missing)
             print(f'  TRELLIS.2 runtime deps missing: {missing_str} (TRELLIS.2 disabled)')
         else:
+            os.environ.setdefault('SPARSE_CONV_BACKEND', 'spconv')
+            os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
+            os.environ.setdefault('ATTN_BACKEND', 'xformers')
             from trellis2.pipelines import Trellis2ImageTo3DPipeline
             print('  TRELLIS.2: OK')
     else:
