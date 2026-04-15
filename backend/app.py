@@ -1,6 +1,6 @@
 """
 PIXFORM Backend
-Image to 3D pipeline — TripoSR (fast) + Hunyuan3D-2 (quality)
+Image to 3D pipeline — TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
 """
 import os, sys, uuid, shutil, asyncio, logging, zipfile, time
 import xml.etree.ElementTree as ET
@@ -38,6 +38,7 @@ if _hy3d_path.exists() and str(_hy3d_path) not in sys.path:
 models = {
     "triposr":   None,
     "hunyuan":   None,
+    "trellis":   None,
     "rembg_sess": None,
     "runtime_device": "cpu",
 }
@@ -161,6 +162,18 @@ def load_all_models():
         logger.info("✅ Hunyuan3D-2 loaded")
     except Exception as e:
         logger.warning(f"Hunyuan3D-2 failed to load: {e}")
+
+    # TRELLIS (CUDA-only, 12+ GB VRAM recommended)
+    try:
+        os.environ.setdefault("SPCONV_ALGO", "native")
+        from trellis.pipelines import TrellisImageTo3DPipeline
+        logger.info("Loading TRELLIS model (~16 GB first time, cached after)...")
+        pipe = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
+        pipe.cuda()
+        models["trellis"] = pipe
+        logger.info("✅ TRELLIS loaded")
+    except Exception as e:
+        logger.warning(f"TRELLIS failed to load: {e}")
 
 
 @asynccontextmanager
@@ -689,6 +702,145 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, status="error", message=str(e))
 
 
+# ── TRELLIS pipeline ──────────────────────────────────────────────────────────
+
+async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: dict):
+    try:
+        import torch
+        from PIL import Image
+
+        t_start = time.time()
+        upd(job_id, status="processing", progress=5, message="Loading image...")
+
+        img = Image.open(image_path).convert("RGBA")
+
+        # Background removal (our rembg session; TRELLIS will skip its own if RGBA alpha is set)
+        if settings.get("remove_bg", True):
+            upd(job_id, progress=10, message="Removing background...")
+            loop = asyncio.get_event_loop()
+            img = await loop.run_in_executor(None, remove_background, img, job_id)
+
+        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...")
+        upd(job_id, progress=25, message="This takes 5–10 minutes, please wait...")
+
+        loop = asyncio.get_event_loop()
+        steps = settings.get("steps", 50)
+        # TRELLIS uses separate step counts: sparse structure (coarser) and SLAT (finer)
+        ss_steps   = max(12, min(50, steps // 3))
+        slat_steps = max(12, min(50, steps))
+
+        def infer():
+            with torch.no_grad():
+                outputs = models["trellis"].run(
+                    img,
+                    seed=42,
+                    sparse_structure_sampler_params={"steps": ss_steps},
+                    slat_sampler_params={"steps": slat_steps},
+                    formats=["mesh", "gaussian"],
+                    preprocess_image=True,
+                )
+            return outputs
+
+        upd(job_id, progress=30, message="Running TRELLIS diffusion model...")
+        outputs = await loop.run_in_executor(None, infer)
+
+        upd(job_id, progress=78, message="3D structure generated ✓")
+
+        # ── Textured GLB export (requires nvdiffrast + mip-splatting) ──────────
+        glb_textured = False
+
+        def make_textured_glb():
+            try:
+                from trellis.utils import postprocessing_utils
+                glb = postprocessing_utils.to_glb(
+                    outputs["gaussian"][0],
+                    outputs["mesh"][0],
+                    simplify=0.95,
+                    texture_size=1024,
+                )
+                glb.export(str(out_dir / "model.glb"))
+                return True
+            except Exception as e:
+                logger.warning(f"TRELLIS textured GLB failed (nvdiffrast/mip-splatting may not be installed): {e}")
+                return False
+
+        glb_textured = await loop.run_in_executor(None, make_textured_glb)
+
+        # ── Extract trimesh for STL / 3MF / OBJ (and plain GLB fallback) ──────
+        def extract_trimesh():
+            import trimesh as _trimesh
+            m = outputs["mesh"][0]
+            return _trimesh.Trimesh(
+                vertices=m.vertices.cpu().numpy(),
+                faces=m.faces.cpu().numpy(),
+                process=True,
+            )
+
+        raw_mesh = await loop.run_in_executor(None, extract_trimesh)
+
+        if len(raw_mesh.faces) == 0:
+            raise RuntimeError("TRELLIS produced an empty mesh")
+
+        post_level = settings.get("post", "standard")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        mesh = await loop.run_in_executor(None, postprocess_mesh, raw_mesh, job_id, post_level)
+
+        # ── Export ────────────────────────────────────────────────────────────
+        upd(job_id, progress=95, message="Exporting files...")
+
+        stl      = out_dir / "model.stl"
+        tmf      = out_dir / "model.3mf"
+        glb_path = out_dir / "model.glb"
+        obj      = out_dir / "model.obj"
+
+        try:
+            mesh.export(str(stl))
+        except Exception as e:
+            raise RuntimeError(f"STL export failed: {e}") from e
+
+        try:
+            mesh.export(str(tmf))
+        except Exception:
+            _export_3mf_manual(mesh, tmf)
+
+        try:
+            mesh.export(str(obj))
+        except Exception as e:
+            logger.warning(f"OBJ export failed: {e}")
+
+        # If textured GLB was not produced, write plain GLB from mesh
+        if not glb_textured:
+            try:
+                mesh.export(str(glb_path))
+            except Exception as e:
+                logger.warning(f"Plain GLB export failed: {e}")
+
+        upd(
+            job_id,
+            stl_url=f"/outputs/{job_id}/model.stl"  if stl.exists()      else None,
+            tmf_url=f"/outputs/{job_id}/model.3mf"  if tmf.exists()      else None,
+            glb_url=f"/outputs/{job_id}/model.glb"  if glb_path.exists() else None,
+            obj_url=f"/outputs/{job_id}/model.obj"  if obj.exists()      else None,
+            poly_count=len(mesh.faces),
+        )
+
+        render_preview(mesh, out_dir / "preview.png")
+
+        elapsed = round(time.time() - t_start, 1)
+        glb_note = " (textured)" if glb_textured else ""
+        upd(job_id,
+            status="done", progress=100,
+            message=f"Done in {elapsed}s — {len(mesh.faces):,} polygons{glb_note}",
+            model_used="TRELLIS",
+            time_taken=elapsed,
+            preview_url=f"/outputs/{job_id}/preview.png",
+        )
+
+    except Exception as e:
+        logger.error(f"TRELLIS error: {e}", exc_info=True)
+        upd(job_id, status="error", message=str(e))
+
+
 # ── Demo pipeline (no GPU) ────────────────────────────────────────────────────
 
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
@@ -715,6 +867,7 @@ async def health():
     return {
         "triposr":    models["triposr"] is not None,
         "hunyuan":    models["hunyuan"] is not None,
+        "trellis":    models["trellis"] is not None,
         "rembg":      models["rembg_sess"] is not None,
         "cuda":       torch.cuda.is_available(),
         "mps":        mps_ok,
@@ -727,15 +880,15 @@ async def health():
 async def convert(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    model:      str  = "triposr",    # triposr | hunyuan
+    model:      str  = "triposr",    # triposr | hunyuan | trellis
     remove_bg:  str  = "true",
     resolution: int  = 512,
-    steps:      int  = 50,           # hunyuan diffusion steps
+    steps:      int  = 50,           # hunyuan/trellis diffusion steps
     post:       str  = "standard",   # none | light | standard | heavy
 ):
     model = (model or "triposr").lower().strip()
-    if model not in {"triposr", "hunyuan"}:
-        raise HTTPException(400, "Invalid model. Use: triposr or hunyuan")
+    if model not in {"triposr", "hunyuan", "trellis"}:
+        raise HTTPException(400, "Invalid model. Use: triposr, hunyuan, or trellis")
 
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "Images only")
@@ -762,6 +915,11 @@ async def convert(
             raise HTTPException(503, "Hunyuan3D-2 model is not loaded. Check /health and GPU setup.")
         run_fn = run_hunyuan
         model_label = "Hunyuan3D-2"
+    elif model == "trellis":
+        if models["trellis"] is None:
+            raise HTTPException(503, "TRELLIS model is not loaded. Check /health and GPU setup.")
+        run_fn = run_trellis
+        model_label = "TRELLIS"
     elif models["triposr"] is not None:
         run_fn = run_triposr
         model_label = "TripoSR"
