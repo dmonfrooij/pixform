@@ -831,7 +831,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             img = await loop.run_in_executor(None, remove_background, img, job_id)
 
         upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...")
-        upd(job_id, progress=25, message="This takes 5ÔÇô10 minutes, please wait...")
+        upd(job_id, progress=25, message="This takes 5 TO 10 minutes, please wait...")
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
