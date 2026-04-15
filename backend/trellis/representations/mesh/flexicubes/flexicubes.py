@@ -34,6 +34,7 @@ except ImportError:
                 raise ValueError("Tensor does not match expected shape")
             return ok
 
+
 __all__ = [
     'FlexiCubes'
 ]
