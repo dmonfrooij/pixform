@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/hunyuan3d_repo" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/trellis2_repo" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/trellis2_repo/o-voxel/third_party/eigen" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/trellis_repo" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/trellis_repo/trellis/representations/mesh/flexicubes" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/triposr_repo" vcs="Git" />
+  </component>
+</project>
