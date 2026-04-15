@@ -51,7 +51,7 @@ function Try-EnableMSVCFromVSBuildTools {
 
 function Stop-VenvPythonProcesses($venvPath) {
     $venvPython = Join-Path $venvPath "Scripts\python.exe"
-    $venvPrefix = ($venvPath.TrimEnd('\\') + '\\').ToLowerInvariant()
+    $venvPrefix = ($venvPath.TrimEnd('\') + '\').ToLowerInvariant()
     try {
         $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction Stop |
             Where-Object {
@@ -273,7 +273,7 @@ if ($runtimeDevice -eq "cuda") {
                 Warn "Tip: set CUDA toolkit for this shell to match torch before install."
                 Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
                 Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
-                Warn "  `$env:Path = "`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path""
+                Warn "  `$env:Path = `"`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path`""
             } else {
                 if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
                 git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
@@ -297,10 +297,12 @@ if ($runtimeDevice -eq "cuda") {
             & "$PY" -c @'
 from pathlib import Path
 
+# Patch flexicubes.py to work without kaolin
 p = Path("backend/trellis/representations/mesh/flexicubes/flexicubes.py")
 if p.exists():
     txt = p.read_text(encoding="utf-8")
-    new = '''try:
+    if "from kaolin.utils.testing import check_tensor" in txt:
+        new_import = '''try:
     from kaolin.utils.testing import check_tensor
 except ImportError:
     try:
@@ -321,9 +323,7 @@ except ImportError:
                 raise ValueError("Tensor does not match expected shape")
             return ok
 '''
-    if "except ImportError:" not in txt:
-        txt = txt.replace("from kaolin.utils.testing import check_tensor", new, 1)
-        txt = txt.replace("from kaolin.testing import check_tensor", new, 1)
+        txt = txt.replace("from kaolin.utils.testing import check_tensor", new_import, 1)
         p.write_text(txt, encoding="utf-8")
         print("  flexicubes.py patched (kaolin fallback)")
 '@
@@ -388,10 +388,10 @@ if ($runtimeDevice -eq "cuda") {
                 Warn "Set toolkit path to v$torchCuda in this shell, then rerun install:"
                 Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
                 Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
-                Warn "  `$env:Path = "`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path""
+                Warn "  `$env:Path = `"`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path`""
                 Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
             } else {
-                & "$PY" -m pip install --no-build-isolation "$oVoxelPath"
+                & "$PY" -m pip install --no-build-isolation "$oVoxelPath" -q
                 if ($LASTEXITCODE -eq 0) { OK "o-voxel installed" } else {
                     Warn "o-voxel build failed - see output above."
                     Warn "TRELLIS.2 will be disabled. Ensure VS Build Tools and CUDA Toolkit are installed."
@@ -440,7 +440,7 @@ txt = txt.replace(
     'image = torch.from_numpy(np.array(image).astype(np.float32) / 255.0)',
     'image = torch.tensor(np.array(image).astype(np.float32) / 255.0)'
 )
-txt = re.sub(r'^import rembg\s*$', '# rembg removed', txt, flags=re.MULTILINE)
+txt = re.sub(r'^import rembg\s*`$', '# rembg removed', txt, flags=re.MULTILINE)
 txt = re.sub(r'from rembg import remove', 'try:\n    from rembg import remove\nexcept ImportError:\n    def remove(img, **kw): return img', txt)
 txt = re.sub(r'rembg\.remove\(([^)]+)\)', r'remove(\1)', txt)
 ast.parse(txt)
@@ -503,8 +503,14 @@ try:
         os.environ.setdefault('ATTN_BACKEND', 'xformers')
         os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
         print(f'  TRELLIS package: found ({len(list(trellis_pkg.iterdir()))} items)')
-        from trellis.pipelines import TrellisImageTo3DPipeline
-        print('  TRELLIS import: OK')
+        try:
+            import spconv
+            import easydict
+            from trellis.pipelines import TrellisImageTo3DPipeline
+            print('[SPARSE] Backend: spconv, Attention: xformers')
+            print('  TRELLIS: OK')
+        except ImportError as ie:
+            print(f'  TRELLIS: FAILED - {ie}')
     else:
         print('  TRELLIS package: not found (CUDA-only feature)')
 except Exception as e:
@@ -518,10 +524,10 @@ try:
         missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
         if missing:
             missing_str = ', '.join(missing)
-            print('  TRELLIS.2 runtime deps missing: ' + missing_str + ' (TRELLIS.2 disabled)')
+            print(f'  TRELLIS.2 runtime deps missing: {missing_str} (TRELLIS.2 disabled)')
         else:
             from trellis2.pipelines import Trellis2ImageTo3DPipeline
-            print('  TRELLIS.2 import: OK')
+            print('  TRELLIS.2: OK')
     else:
         print('  TRELLIS.2 package: not found (optional CUDA feature)')
 except Exception as e:
@@ -555,3 +561,4 @@ Set-Content -LiteralPath (Join-Path $PSScriptRoot ".pixform_device") -Value $run
 OK "Saved runtime device preference to .pixform_device"
 
 Read-Host "Press Enter to exit"
+

@@ -1,128 +1,128 @@
-# PIXFORM — Afbeelding naar 3D
+# PIXFORM — Image to 3D
 
-PIXFORM zet één invoerafbeelding om naar een lokaal 3D-model met focus op zo hoog mogelijke outputkwaliteit, bruikbare exports en eenvoudige lokale installatie.
+PIXFORM converts a single image into a local 3D model with focus on maximum output quality, usable exports, and easy local installation.
 
-In deze repository zitten drie generatiemodi:
+Three generation modes are available in this repository:
 
-- **TripoSR** — snelste optie, werkt op `cuda`, `mps` en `cpu`
-- **Hunyuan3D-2** — hogere shape-kwaliteit, momenteel alleen bruikbaar op `cuda`
-- **TRELLIS** — hoogste kwaliteit, met GLB-export en waar mogelijk getextureerde GLB, alleen op `cuda`
+- **TripoSR** — fastest option, works on `cuda`, `mps` and `cpu`
+- **Hunyuan3D-2** — higher shape quality, currently only on `cuda`
+- **TRELLIS** — highest quality, with GLB export and textured GLB where possible, only on `cuda`
 
-**Exportformaten:** `STL`, `3MF`, `GLB`, `OBJ`
-
----
-
-## Wat PIXFORM doet
-
-- lokale webapp op `http://localhost:8000`
-- upload van één afbeelding
-- optionele AI-achtergrondverwijdering
-- keuze uit snel, kwaliteit of maximale kwaliteit
-- preview-render van het resultaat
-- download van meerdere 3D-formaten
-
-De backend draait vanuit `backend/app.py` en de webinterface staat in `frontend/index.html`.
+**Export formats:** `STL`, `3MF`, `GLB`, `OBJ`
 
 ---
 
-## Ondersteunde platformen
+## What PIXFORM does
+
+- local webapp on `http://localhost:8000`
+- upload single image
+- optional AI background removal
+- choice of fast, quality or maximum quality
+- preview render of result
+- download multiple 3D formats
+
+The backend runs from `backend/app.py` and the web interface is in `frontend/index.html`.
+
+---
+
+## Supported Platforms
 
 ### Windows + NVIDIA
-Aanbevolen voor de beste prestaties en toegang tot alle modellen.
+Recommended for best performance and access to all models.
 
-Ondersteund via:
-- `install.ps1`
-- `PIXFORM.bat`
+Supported via:
+- `install.ps1` (PowerShell installer)
+- `PIXFORM.bat` (launcher)
 
 ### macOS / MacBook Pro (Apple Silicon)
-Geschikt voor snelle lokale workflow met `mps` / Metal.
+Suitable for fast local workflow with `mps` / Metal.
 
-Ondersteund via:
-- `install_mac.sh`
-- `PIXFORM.sh`
+Supported via:
+- `install_mac.sh` (bash installer)
+- `PIXFORM.sh` (launcher)
 
 ### CPU fallback
-Werkt ook zonder ondersteunde GPU, maar duidelijk trager. In dat geval is vooral **TripoSR** praktisch bruikbaar.
+Also works without supported GPU, but clearly slower. In that case, especially **TripoSR** is practically usable.
 
 ---
 
-## Vereisten
+## Requirements
 
-### Algemeen
+### General
 - Git
 - Python **3.10**
 
 ### Windows
-- Windows 10 of 11
+- Windows 10 or 11
 - PowerShell
-- Voor beste prestaties: NVIDIA GPU met recente driver
+- For best performance: NVIDIA GPU with recent driver
 
-Voor CUDA-profielen (`-Profile nvidia`) gelden extra vereisten:
+For CUDA profiles (`-Profile nvidia`) additional requirements apply:
 
-- NVIDIA driver + `nvidia-smi` beschikbaar
-- Visual Studio Build Tools (C++ toolchain, `cl.exe`) voor native builds
-- CUDA Toolkit met `nvcc` beschikbaar op `PATH`
-- Aanbevolen: toolkitversie gelijk aan de CUDA-versie van geïnstalleerde PyTorch (standaard in dit script: `12.4`)
+- NVIDIA driver + `nvidia-smi` available
+- Visual Studio Build Tools (C++ toolchain, `cl.exe`) for native builds
+- CUDA Toolkit with `nvcc` available on `PATH`
+- Recommended: toolkit version matching the CUDA version of installed PyTorch (default in this script: `12.4`)
 
 ### macOS
-- `python3` beschikbaar
-- macOS shell met bash
-- Apple Silicon wordt impliciet ondersteund via `mps`
+- `python3` available
+- macOS shell with bash
+- Apple Silicon implicitly supported via `mps`
 
-> Op basis van de scripts in deze repository verwacht zowel de Windows- als macOS-installatie expliciet **Python 3.10**.
+> Both Windows and macOS installers expect **Python 3.10** explicitly.
 
 ---
 
-## Modellen
+## Models
 
-| Model | Beste voor | Device support | Opmerking |
+| Model | Best for | Device support | Notes |
 |---|---|---|---|
-| TripoSR | Snel testen, previews, bredere compatibiliteit | CUDA / MPS / CPU | Laadt als primaire algemene fallback |
-| Hunyuan3D-2 | Betere geometrie dan TripoSR | CUDA | Wordt alleen geladen als runtime device `cuda` is |
-| TRELLIS | Hoogste kwaliteit | CUDA | Probeert getextureerde GLB te maken; valt anders terug op gewone GLB |
+| TripoSR | Quick testing, previews, broader compatibility | CUDA / MPS / CPU | Loads as primary general fallback |
+| Hunyuan3D-2 | Better geometry than TripoSR | CUDA | Only loaded if runtime device is `cuda` |
+| TRELLIS | Highest quality | CUDA | Attempts textured GLB; otherwise falls back to plain GLB |
 
-De backend kiest het runtime-device via `PIXFORM_DEVICE` met veilige fallback-logica.
+The backend chooses the runtime device via `PIXFORM_DEVICE` with safe fallback logic.
 
 ---
 
-## Device-keuze
+## Device Choice
 
-PIXFORM ondersteunt deze device-modi:
+PIXFORM supports these device modes:
 
 - `cuda`
 - `mps`
 - `cpu`
 - `auto`
 
-De backend-resolutievolgorde in `backend/app.py` is:
+The backend's device resolution order in `backend/app.py` is:
 
 1. `cuda`
 2. `mps`
 3. `cpu`
 
-Aliasnamen die ook werken:
+Alias names that also work:
 - `nvidia` → `cuda`
 - `mac` → `mps`
 
-Als een gevraagd device niet beschikbaar is, valt PIXFORM automatisch terug naar een bruikbaar alternatief.
+If a requested device is unavailable, PIXFORM automatically falls back to a usable alternative.
 
 ---
 
-## Installatie
+## Installation
 
-Gebruik bij voorkeur een schone virtual environment; de installatiescripts maken zelf een nieuwe `venv` aan.
+Use preferably a clean virtual environment; the installation scripts create their own `venv`.
 
 ### Windows
 
-Voer in PowerShell uit:
+Run in PowerShell:
 
 ```powershell
-cd C:\Users\Eiboer\PycharmProjects\pixform
+cd C:\Users\YourUsername\path\to\pixform
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 -Profile auto
 ```
 
-Voor `-Profile nvidia` kun je vooraf expliciet de toolkit in de huidige shell zetten (voorbeeld voor CUDA 12.4):
+For `-Profile nvidia` you can pre-set the toolkit in the current shell (example for CUDA 12.4):
 
 ```powershell
 $env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4'
@@ -131,64 +131,65 @@ $env:Path = "$env:CUDA_HOME\bin;$env:CUDA_HOME\libnvvp;$env:Path"
 nvcc --version
 ```
 
-Controleer daarna desnoods ook welke CUDA-versie PyTorch in de venv gebruikt:
+Then verify which CUDA version PyTorch in the venv uses:
 
 ```powershell
 .\venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.version.cuda)"
 ```
 
-Als `torch.version.cuda` en `nvcc --version` niet matchen, kunnen optionele native builds (zoals `nvdiffrast` en `o-voxel` voor TRELLIS.2) worden overgeslagen.
+If `torch.version.cuda` and `nvcc --version` don't match, optional native builds (like `nvdiffrast` and `o-voxel` for TRELLIS.2) may be skipped.
 
-Beschikbare profielen voor `install.ps1`:
+Available profiles for `install.ps1`:
 
-- `auto` — gebruikt `cuda` als NVIDIA beschikbaar is, anders `cpu`
-- `nvidia` — forceert CUDA-installatie en installeert CUDA-only modelondersteuning
-- `cpu` — installeert alleen CPU-runtime
+- `auto` — uses `cuda` if NVIDIA available, otherwise `cpu`
+- `nvidia` — forces CUDA installation and installs CUDA-only model support
+- `cpu` — installs CPU-only runtime
 
-Wat `install.ps1` doet:
+What `install.ps1` does:
 
-- maakt `venv` opnieuw aan
-- installeert PyTorch 2.5.1
-- installeert kernpakketten zoals FastAPI, rembg, OpenCV en trimesh
-- clone't **Hunyuan3D-2**
-- clone't **TripoSR**
-- clone't **TRELLIS** alleen bij CUDA-profiel
-- schrijft het gekozen runtime-device naar `.pixform_device`
+- recreates `venv`
+- installs PyTorch 2.5.1 with CUDA 12.4 support
+- installs core packages (FastAPI, rembg, OpenCV, trimesh)
+- clones **Hunyuan3D-2**
+- clones **TripoSR**
+- clones **TRELLIS** only in CUDA profile
+- patches TRELLIS for kaolin-free operation
+- writes chosen runtime device to `.pixform_device`
 
 ### macOS / MacBook Pro
 
-Voer uit:
+Run:
 
 ```bash
-cd /pad/naar/pixform
+cd /path/to/pixform
 chmod +x install_mac.sh PIXFORM.sh
 ./install_mac.sh mac
 ```
 
-Beschikbare profielen voor `install_mac.sh`:
+Available profiles for `install_mac.sh`:
 
-- `mac` — gebruikt `mps`
-- `auto` — kiest op macOS ook `mps`
-- `cpu` — forceert CPU
-- `nvidia` — CUDA-profiel voor systemen waar dat expliciet gewenst is
+- `mac` — uses `mps`
+- `auto` — also chooses `mps` on macOS
+- `cpu` — forces CPU
+- `nvidia` — CUDA profile for systems where explicitly desired
 
-Wat `install_mac.sh` doet:
+What `install_mac.sh` does:
 
-- maakt `venv` opnieuw aan
-- installeert PyTorch 2.5.1
-- installeert de kernafhankelijkheden
-- installeert `open3d` best-effort
-- clone't en patcht **TripoSR**
-- clone't **Hunyuan3D-2** en **TRELLIS** alleen in CUDA-profiel
-- schrijft het runtime-device naar `.pixform_device`
+- recreates `venv`
+- installs PyTorch 2.5.1
+- installs core dependencies
+- installs `open3d` best-effort
+- clones and patches **TripoSR**
+- clones **Hunyuan3D-2** and **TRELLIS** only in CUDA profile
+- writes runtime device to `.pixform_device`
 
-### Eerste start
+### First Start
 
-Bij de eerste echte run kunnen modelgewichten nog extra worden gedownload en lokaal gecachet. Dat kost tijd en schijfruimte, vooral voor Hunyuan3D-2 en TRELLIS.
+On the first real run, model weights may need additional downloads and local caching. This takes time and disk space, especially for Hunyuan3D-2 and TRELLIS.
 
 ---
 
-## Starten
+## Starting
 
 ### Windows
 
@@ -196,14 +197,20 @@ Bij de eerste echte run kunnen modelgewichten nog extra worden gedownload en lok
 PIXFORM.bat
 ```
 
-Optionele overrides:
+Optional overrides:
 
 ```bat
 PIXFORM.bat nvidia
-PIXFORM.bat cuda
 PIXFORM.bat cpu
 PIXFORM.bat mac
 PIXFORM.bat mps
+```
+
+Or with environment variable:
+
+```powershell
+$env:PIXFORM_DEVICE = 'cuda'
+.\PIXFORM.bat
 ```
 
 ### macOS
@@ -212,7 +219,7 @@ PIXFORM.bat mps
 ./PIXFORM.sh
 ```
 
-Optionele overrides:
+Optional overrides:
 
 ```bash
 ./PIXFORM.sh mac
@@ -221,7 +228,13 @@ Optionele overrides:
 ./PIXFORM.sh nvidia
 ```
 
-De launcher start `backend/app.py` en opent daarna de browser op:
+Or with environment variable:
+
+```bash
+PIXFORM_DEVICE=mps ./PIXFORM.sh
+```
+
+The launcher starts `backend/app.py` and then opens the browser at:
 
 ```text
 http://localhost:8000
@@ -229,9 +242,9 @@ http://localhost:8000
 
 ---
 
-## Handmatige device-override
+## Manual Device Override
 
-Je kunt ook direct de environment variable zetten.
+You can also set the environment variable directly.
 
 ### Windows PowerShell
 
@@ -255,77 +268,77 @@ PIXFORM_DEVICE=mps ./PIXFORM.sh
 PIXFORM_DEVICE=cpu ./PIXFORM.sh
 ```
 
-De launchers lezen anders automatisch `.pixform_device`; als dat bestand niet bestaat, gebruiken ze `auto`.
+The launchers otherwise automatically read `.pixform_device`; if that file doesn't exist, they use `auto`.
 
 ---
 
-## Gebruik in de app
+## Usage in the App
 
-Basisworkflow:
+Basic workflow:
 
-1. sleep of selecteer een afbeelding
-2. kies een model
-3. kies een quality preset
-4. kies of de achtergrond verwijderd moet worden
-5. klik op **Generate**
-6. download `STL`, `3MF`, `GLB` of `OBJ`
+1. Drag or select an image
+2. Choose a model
+3. Choose a quality preset
+4. Choose whether background removal is needed
+5. Click **Generate**
+6. Download `STL`, `3MF`, `GLB` or `OBJ`
 
-De backend heeft hiervoor onder andere deze routes:
+The backend has these routes for this:
 
-- `GET /health`
-- `POST /convert`
-- `GET /status/{job_id}`
-- `DELETE /jobs/{job_id}`
+- `GET /health` — model status, device info
+- `POST /convert` — submit image for 3D generation
+- `GET /status/{job_id}` — poll job status
+- `DELETE /jobs/{job_id}` — cancel/delete job
 
 ---
 
-## Kwaliteitspresets
+## Quality Presets
 
-De presets komen rechtstreeks uit de UI in `frontend/index.html`.
+The presets come directly from the UI in `frontend/index.html`.
 
-| Preset | TripoSR resolutie | Hunyuan/TRELLIS steps | Post-processing | Richttijd (TripoSR / Hunyuan / TRELLIS) |
+| Preset | TripoSR resolution | Hunyuan/TRELLIS steps | Post-processing | Approx time (TripoSR / Hunyuan / TRELLIS) |
 |---|---:|---:|---|---|
 | ⚡ Draft | 128 | 10 | `none` | ~10 sec / ~1 min / ~3 min |
 | 🔹 Low | 192 | 20 | `light` | ~30 sec / ~2 min / ~4 min |
 | 🔷 Medium | 256 | 30 | `light` | ~1 min / ~3 min / ~5 min |
-| ⭐ High | 512 | 50 | `standard` | ~15 min / ~5 min / ~8 min |
-| 🔶 Ultra | 640 | 75 | `standard` | ~30 min / ~8 min / ~10 min |
-| 💎 Extreme | 768 | 100 | `heavy` | ~45 min / ~12 min / ~12 min |
-| 🔥 Maximum | 1024 | 100 | `heavy` | ~60+ min / ~15 min / ~15 min |
-| ✏️ Custom | handmatig | handmatig | handmatig | afhankelijk van instellingen |
+| ⭐ High | 512 | 50 | `standard` | ~3 min / ~5 min / ~8 min |
+| 🔶 Ultra | 640 | 75 | `standard` | ~5 min / ~8 min / ~10 min |
+| 💎 Extreme | 768 | 100 | `heavy` | ~8 min / ~12 min / ~12 min |
+| 🔥 Maximum | 1024 | 100 | `heavy` | ~12+ min / ~15 min / ~15 min |
+| ✏️ Custom | manual | manual | manual | depends on settings |
 
-Beschikbare post-processing niveaus:
+Available post-processing levels:
 
-- `none`
-- `light`
-- `standard`
-- `heavy`
-
----
-
-## Beste 3D-kwaliteit: aanbevolen keuzes
-
-Als je de best mogelijke output wilt:
-
-- gebruik een scherpe, goed belichte afbeelding
-- houd het onderwerp volledig in beeld
-- gebruik één duidelijk object
-- vermijd drukke achtergrond en motion blur
-- gebruik bij voorkeur `Hunyuan3D-2` of `TRELLIS` op NVIDIA/CUDA
-- kies `High`, `Ultra`, `Extreme` of `Maximum`
-- laat post-processing op `standard` of `heavy` staan
-
-Praktische keuze per situatie:
-
-- **Snel testen** → TripoSR + Draft/Low/Medium
-- **Goede mesh-kwaliteit** → Hunyuan3D-2 + High/Ultra
-- **Best mogelijke kwaliteit** → TRELLIS + High/Ultra/Extreme
+- `none` — no post-processing
+- `light` — basic cleanup and smoothing
+- `standard` — full repair + smoothing + Poisson reconstruction
+- `heavy` — aggressive refinement with voxel remesh fallback
 
 ---
 
-## Outputformaten
+## Best 3D Quality: Recommended Choices
 
-PIXFORM exporteert vanuit de backend deze formaten:
+For best possible output:
+
+- Use a sharp, well-lit image
+- Keep subject fully in frame
+- Use one clear object
+- Avoid busy backgrounds and motion blur
+- Prefer `Hunyuan3D-2` or `TRELLIS` on NVIDIA/CUDA
+- Choose `High`, `Ultra`, `Extreme` or `Maximum`
+- Keep post-processing on `standard` or `heavy`
+
+Practical choice per situation:
+
+- **Quick testing** → TripoSR + Draft/Low/Medium
+- **Good mesh quality** → Hunyuan3D-2 + High/Ultra
+- **Best possible quality** → TRELLIS + High/Ultra/Extreme
+
+---
+
+## Output Formats
+
+PIXFORM exports these formats from the backend:
 
 - `model.stl`
 - `model.3mf`
@@ -333,21 +346,21 @@ PIXFORM exporteert vanuit de backend deze formaten:
 - `model.obj`
 - `preview.png`
 
-Belangrijk:
+Important:
 
-- `STL` is de meest printvriendelijke export
-- `3MF` wordt ook aangeboden en heeft een handmatige fallback-export in de backend
-- `OBJ` is breed compatibel
-- `GLB` is beschikbaar voor compacte distributie en preview
-- bij **TRELLIS** probeert PIXFORM een **getextureerde GLB** te maken als optionele afhankelijkheden beschikbaar zijn; lukt dat niet, dan wordt een gewone mesh-GLB weggeschreven
+- `STL` is the most 3D-printer-friendly export
+- `3MF` is also offered and has a manual fallback export in the backend
+- `OBJ` is broadly compatible
+- `GLB` is available for compact distribution and preview
+- With **TRELLIS**, PIXFORM attempts a **textured GLB**; if optional dependencies fail, a plain mesh GLB is written instead
 
-Outputs worden opgeslagen in:
+Outputs are stored in:
 
 ```text
 backend/outputs/<job-id>/
 ```
 
-Uploads komen terecht in:
+Uploads go to:
 
 ```text
 backend/uploads/
@@ -355,95 +368,106 @@ backend/uploads/
 
 ---
 
-## Modelbeschikbaarheid en `/health`
+## Model Availability and `/health`
 
-De endpoint `GET /health` geeft onder andere terug:
+The `GET /health` endpoint returns, among others:
 
-- of `triposr` geladen is
-- of `hunyuan` geladen is
-- of `trellis` geladen is
-- of `rembg` actief is
-- of `cuda` of `mps` beschikbaar is
-- welk runtime-device werkelijk gebruikt wordt
+- whether `triposr` is loaded
+- whether `hunyuan` is loaded
+- whether `trellis` is loaded
+- whether `rembg` is active
+- whether `cuda` or `mps` is available
+- which runtime device is actually used
 
-Dit is handig als een CUDA-only model niet selecteerbaar is of bij start niet correct laadt.
+This is useful if a CUDA-only model is not selectable or doesn't load correctly at startup.
 
 ---
 
-## Probleemoplossing
+## Troubleshooting
 
-### 1. CUDA-model laadt niet
-Controleer:
-- NVIDIA-driver
-- of `torch.cuda.is_available()` waar is
-- of je met `-Profile nvidia` hebt geïnstalleerd
-- of `backend/trellis` en `backend/hy3dgen` aanwezig zijn
+### 1. CUDA model doesn't load
+Check:
+- NVIDIA driver
+- whether `torch.cuda.is_available()` is true
+- whether you installed with `-Profile nvidia`
+- whether `backend/trellis` and `backend/hy3dgen` exist
 
-### 2. Op Mac gebruikt de app geen MPS
-Controleer:
-- of `PIXFORM_DEVICE` niet op `cpu` staat
-- of `.pixform_device` niet per ongeluk `cpu` bevat
-- of PyTorch `mps` ziet
+### 2. On Mac the app doesn't use MPS
+Check:
+- whether `PIXFORM_DEVICE` is not set to `cpu`
+- whether `.pixform_device` doesn't accidentally contain `cpu`
+- whether PyTorch sees `mps`
 
-### 3. TRELLIS geeft geen getextureerde GLB
-Dat is niet altijd een harde fout. In de backend zit expliciet fallback-logica:
-- eerst poging tot textured GLB
-- daarna fallback naar gewone GLB-export
+### 3. TRELLIS doesn't provide textured GLB
+This is not always a hard error. The backend has explicit fallback logic:
+- first attempt textured GLB
+- then fallback to plain GLB export
 
-### 4. TRELLIS laadt niet op Windows
-Controleer:
-- draai installatie met `-Profile nvidia`
-- controleer `/health` op `trellis_status` en `trellis_error`
-- gebruik `xformers` als attention-backend (de backend zet dit standaard op Windows)
+### 4. TRELLIS won't load on Windows
+Check:
+- run installation with `-Profile nvidia`
+- check `/health` for `trellis_status` and `trellis_error`
+- use `xformers` as attention backend (backend sets this by default on Windows)
 
 Extra context:
-- een melding over ontbrekende `triton` is meestal een performance-waarschuwing en niet per se een load-fout
-- de `kaolin` import in `flexicubes.py` heeft een fallback in deze codebase
+- a notice about missing `triton` is usually a performance warning and not necessarily a load failure
+- the `kaolin` import in `flexicubes.py` has a fallback in this codebase
 
-### 5. Installatie duurt lang
-Dat is normaal voor:
+### 5. Installation takes a long time
+This is normal for:
 - PyTorch
 - Hunyuan3D-2 dependencies
 - TRELLIS dependencies
-- eerste modeldownload bij runtime
+- first model download at runtime
 
 ---
 
-## Projectstructuur
+## Project Structure
 
 ```text
 pixform/
 ├── backend/
-│   ├── app.py            # FastAPI backend en modelpipeline
-│   ├── outputs/          # gegenereerde resultaten
-│   ├── uploads/          # geüploade bronafbeeldingen
-│   ├── tsr/              # TripoSR runtimebestanden
-│   ├── hy3dgen/          # Hunyuan3D runtimebestanden
-│   └── trellis/          # TRELLIS runtimebestanden (na CUDA-installatie)
+│   ├── app.py            # FastAPI backend and model pipelines
+│   ├── outputs/          # generated results
+│   ├── uploads/          # uploaded source images
+│   ├── tsr/              # TripoSR runtime files
+│   ├── hy3dgen/          # Hunyuan3D runtime files
+│   └── trellis/          # TRELLIS runtime files (after CUDA install)
 ├── frontend/
-│   └── index.html        # webinterface
+│   └── index.html        # web interface
 ├── install.ps1           # Windows installer
 ├── install_mac.sh        # macOS installer
 ├── PIXFORM.bat           # Windows launcher
 ├── PIXFORM.sh            # macOS launcher
 ├── pixform.iss           # Inno Setup script
-├── triposr_repo/         # gekloonde bron tijdens/na installatie
-├── hunyuan3d_repo/       # gekloonde bron tijdens/na installatie
-├── trellis_repo/         # gekloonde bron tijdens/na CUDA-installatie
+├── triposr_repo/         # cloned source during/after install
+├── hunyuan3d_repo/       # cloned source during/after install
+├── trellis_repo/         # cloned source during/after CUDA install
 └── README.md
 ```
 
 ---
 
-## Windows installer bouwen
+## Windows Installer Build
 
-Op basis van de repository staat er een Inno Setup-script in `pixform.iss`.
+Based on the repository, there's an Inno Setup script in `pixform.iss`.
 
-Globaal proces:
+General process:
 
-1. installeer Inno Setup
-2. open `pixform.iss`
-3. build het script
+1. Install Inno Setup
+2. Open `pixform.iss`
+3. Build the script
+
+---
+
+## Fixes in This Version
+
+- ✅ Fixed TRELLIS kaolin import with fallback for flexicubes
+- ✅ Improved install script with better error handling
+- ✅ Fixed app.py UTF-16 encoding issue
+- ✅ Better TRELLIS dependency validation
+- ✅ Clearer error messages in `/health` endpoint
+- ✅ Updated README with complete setup instructions
 
 ---
 
@@ -455,7 +479,7 @@ Globaal proces:
 - [rembg](https://github.com/danielgatis/rembg)
 - [Open3D](http://www.open3d.org/)
 
-## Licentie
+## License
 
-Zie `LICENSE`.
+See `LICENSE`.
 
