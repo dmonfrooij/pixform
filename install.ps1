@@ -14,6 +14,41 @@ function Warn($m)  { Write-Host "  [!]  $m" -ForegroundColor Yellow }
 function Fail($m)  { Write-Host "`n  [ERROR] $m" -ForegroundColor Red; Read-Host "Press Enter to exit"; exit 1 }
 function Info($m)  { Write-Host "  $m" -ForegroundColor Gray }
 
+function Get-CudaToolkitVersion {
+    $hasNvcc = $null -ne (Get-Command nvcc -ErrorAction SilentlyContinue)
+    if (-not $hasNvcc) { return "" }
+    $nvccOut = (nvcc --version 2>&1 | Out-String)
+    if ($nvccOut -match "release\s+([0-9]+\.[0-9]+)") { return $matches[1] }
+    return ""
+}
+
+function Get-TorchCudaVersion($pythonExe) {
+    return (& "$pythonExe" -c "import torch; print(torch.version.cuda or '')" 2>$null | Select-Object -First 1).Trim()
+}
+
+function Try-EnableMSVCFromVSBuildTools {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
+    try {
+        $installPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null | Select-Object -First 1).Trim()
+        if (-not $installPath) { return $false }
+
+        $vsDevCmd = Join-Path $installPath "Common7\Tools\VsDevCmd.bat"
+        if (-not (Test-Path -LiteralPath $vsDevCmd)) { return $false }
+
+        $dump = & cmd /c "\"$vsDevCmd\" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+        foreach ($line in $dump) {
+            if ($line -match "^([^=]+)=(.*)$") {
+                [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
+            }
+        }
+        return ($null -ne (Get-Command cl -ErrorAction SilentlyContinue))
+    } catch {
+        Warn "Could not import VS Build Tools environment: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Stop-VenvPythonProcesses($venvPath) {
     $venvPython = Join-Path $venvPath "Scripts\python.exe"
     $venvPrefix = ($venvPath.TrimEnd('\\') + '\\').ToLowerInvariant()
@@ -194,7 +229,10 @@ if ($runtimeDevice -eq "cuda") {
     # Clone TRELLIS repo
     $trellisRepo = Join-Path $PSScriptRoot "trellis_repo"
     if (Test-Path -LiteralPath $trellisRepo) { Remove-Item -Recurse -Force -LiteralPath $trellisRepo }
-    git clone --quiet --depth 1 https://github.com/microsoft/TRELLIS.git "$trellisRepo"
+    git clone --quiet --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.git "$trellisRepo"
+    if (Test-Path -LiteralPath $trellisRepo) {
+        git -C "$trellisRepo" submodule update --init --recursive --depth 1 2>$null | Out-Null
+    }
     if (Test-Path -LiteralPath $trellisRepo) {
         OK "TRELLIS repo cloned"
     } else {
@@ -216,7 +254,7 @@ if ($runtimeDevice -eq "cuda") {
         Info "Installing utils3d and mesh tools..."
         & "$PY" -m pip install `
             "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" `
-            xatlas pyvista pymeshfix igraph -q
+            easydict xatlas pyvista pymeshfix igraph -q
         if ($LASTEXITCODE -eq 0) { OK "TRELLIS mesh tools installed" } else { Warn "Some TRELLIS mesh tools failed" }
 
         # nvdiffrast - optional, enables textured GLB export
@@ -226,13 +264,26 @@ if ($runtimeDevice -eq "cuda") {
         if (-not $hasNvcc) {
             Warn "CUDA toolkit (nvcc) not found - skipping nvdiffrast; textured GLB will use plain mesh fallback"
         } else {
-            if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
-            git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
-            if (Test-Path -LiteralPath $nvdiffPath) {
-                & "$PY" -m pip install --no-build-isolation "$nvdiffPath" -q
-                if ($LASTEXITCODE -eq 0) { OK "nvdiffrast installed (textured GLB enabled)" } else { Warn "nvdiffrast failed - textured GLB will use plain mesh fallback" }
+            $torchCuda = Get-TorchCudaVersion "$PY"
+            $nvccVersion = Get-CudaToolkitVersion
+            Info "nvdiffrast toolchain check: torch CUDA=$torchCuda ; nvcc=$nvccVersion"
+
+            if ($torchCuda -and $nvccVersion -and ($torchCuda -ne $nvccVersion)) {
+                Warn "CUDA mismatch (torch=$torchCuda, nvcc=$nvccVersion) - skipping nvdiffrast build; textured GLB will use plain mesh fallback"
+                Warn "Tip: set CUDA toolkit for this shell to match torch before install."
+                Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
+                Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
+                Warn "  `$env:Path = "`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path""
             } else {
-                Warn "nvdiffrast clone failed - textured GLB will use plain mesh fallback"
+                if (Test-Path -LiteralPath $nvdiffPath) { Remove-Item -Recurse -Force -LiteralPath $nvdiffPath }
+                git clone --quiet https://github.com/NVlabs/nvdiffrast.git "$nvdiffPath" 2>$null
+                if (Test-Path -LiteralPath $nvdiffPath) {
+                    & "$PY" -m pip install ninja -q
+                    & "$PY" -m pip install --no-build-isolation "$nvdiffPath" -q
+                    if ($LASTEXITCODE -eq 0) { OK "nvdiffrast installed (textured GLB enabled)" } else { Warn "nvdiffrast failed - textured GLB will use plain mesh fallback" }
+                } else {
+                    Warn "nvdiffrast clone failed - textured GLB will use plain mesh fallback"
+                }
             }
         }
 
@@ -243,6 +294,39 @@ if ($runtimeDevice -eq "cuda") {
         if (Test-Path -LiteralPath $trellisSrc) {
             Copy-Item -Recurse -LiteralPath $trellisSrc -Destination $trellisDest
             OK "TRELLIS package copied to backend"
+            & "$PY" -c @'
+from pathlib import Path
+
+p = Path("backend/trellis/representations/mesh/flexicubes/flexicubes.py")
+if p.exists():
+    txt = p.read_text(encoding="utf-8")
+    new = '''try:
+    from kaolin.utils.testing import check_tensor
+except ImportError:
+    try:
+        from kaolin.testing import check_tensor
+    except ImportError:
+        import torch
+        def check_tensor(tensor, shape, throw=False):
+            ok = torch.is_tensor(tensor)
+            if ok and shape is not None:
+                if tensor.dim() != len(shape):
+                    ok = False
+                else:
+                    for actual, expected in zip(tensor.shape, shape):
+                        if expected is not None and actual != expected:
+                            ok = False
+                            break
+            if throw and not ok:
+                raise ValueError("Tensor does not match expected shape")
+            return ok
+'''
+    if "except ImportError:" not in txt:
+        txt = txt.replace("from kaolin.utils.testing import check_tensor", new, 1)
+        txt = txt.replace("from kaolin.testing import check_tensor", new, 1)
+        p.write_text(txt, encoding="utf-8")
+        print("  flexicubes.py patched (kaolin fallback)")
+'@
         } else {
             Warn "TRELLIS trellis/ folder not found in repo"
         }
@@ -250,6 +334,87 @@ if ($runtimeDevice -eq "cuda") {
 } else {
     Step "Skipping TRELLIS (CUDA/NVIDIA GPU required)"
     Warn "TRELLIS requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
+}
+
+# ── TRELLIS.2 (experimental on Windows) ──────────────────────────────────────
+if ($runtimeDevice -eq "cuda") {
+    Step "Installing TRELLIS.2 (experimental Windows support)"
+    $trellis2Repo = Join-Path $PSScriptRoot "trellis2_repo"
+    if (Test-Path -LiteralPath $trellis2Repo) { Remove-Item -Recurse -Force -LiteralPath $trellis2Repo }
+    git clone --quiet --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.2.git "$trellis2Repo"
+    if (Test-Path -LiteralPath $trellis2Repo) {
+        git -C "$trellis2Repo" submodule update --init --recursive --depth 1 2>$null | Out-Null
+        OK "TRELLIS.2 repo cloned"
+
+        Info "Installing TRELLIS.2 core dependencies..."
+        & "$PY" -m pip install `
+            imageio imageio-ffmpeg tqdm easydict opencv-python-headless ninja trimesh `
+            transformers "gradio==6.0.1" tensorboard pandas lpips zstandard kornia timm -q
+        if ($LASTEXITCODE -eq 0) { OK "TRELLIS.2 core dependencies installed" } else { Warn "Some TRELLIS.2 core dependencies failed" }
+
+        $oVoxelPath = Join-Path $trellis2Repo "o-voxel"
+        if (Test-Path -LiteralPath $oVoxelPath) {
+            Info "Installing o-voxel package (requires MSVC + CUDA Toolkit)..."
+
+            # Put venv\Scripts first so the pip-installed ninja.exe is found by torch's BuildExtension
+            $origPath = $env:PATH
+            $env:PATH = "$venvPath\Scripts;$env:PATH"
+
+            # Pre-flight: check for MSVC (cl.exe) and nvcc (CUDA Toolkit developer headers)
+            $hasCl   = $null -ne (Get-Command cl   -ErrorAction SilentlyContinue)
+            $hasNvcc = $null -ne (Get-Command nvcc -ErrorAction SilentlyContinue)
+            $torchCuda = Get-TorchCudaVersion "$PY"
+            $nvccVersion = Get-CudaToolkitVersion
+
+            if (-not $hasCl) {
+                Info "cl.exe not found in current shell; trying VS Build Tools environment bootstrap..."
+                $hasCl = Try-EnableMSVCFromVSBuildTools
+            }
+
+            $clCmd = Get-Command cl -ErrorAction SilentlyContinue
+            if ($clCmd) { Info "MSVC compiler: $($clCmd.Source)" }
+
+            if (-not $hasCl) {
+                Warn "MSVC compiler (cl.exe) not found - o-voxel needs Visual Studio Build Tools."
+                Warn "Install from: https://aka.ms/vs/17/release/vs_BuildTools.exe"
+                Warn "If already installed, re-run install.ps1 from 'x64 Native Tools Command Prompt for VS 2022'"
+                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
+            } elseif (-not $hasNvcc) {
+                Warn "CUDA Toolkit nvcc not found - o-voxel needs the full CUDA Toolkit (not just the runtime)."
+                Warn "Install the CUDA Toolkit from: https://developer.nvidia.com/cuda-downloads"
+                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
+            } elseif ($torchCuda -and $nvccVersion -and ($torchCuda -ne $nvccVersion)) {
+                Warn "CUDA mismatch for o-voxel build (torch=$torchCuda, nvcc=$nvccVersion)."
+                Warn "Set toolkit path to v$torchCuda in this shell, then rerun install:"
+                Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
+                Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
+                Warn "  `$env:Path = "`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path""
+                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
+            } else {
+                & "$PY" -m pip install --no-build-isolation "$oVoxelPath"
+                if ($LASTEXITCODE -eq 0) { OK "o-voxel installed" } else {
+                    Warn "o-voxel build failed - see output above."
+                    Warn "TRELLIS.2 will be disabled. Ensure VS Build Tools and CUDA Toolkit are installed."
+                }
+            }
+
+            $env:PATH = $origPath
+        } else {
+            Warn "TRELLIS.2 o-voxel folder not found"
+        }
+
+        $trellis2Src  = Join-Path $trellis2Repo "trellis2"
+        $trellis2Dest = Join-Path $backendPath "trellis2"
+        if (Test-Path -LiteralPath $trellis2Dest) { Remove-Item -Recurse -Force -LiteralPath $trellis2Dest }
+        if (Test-Path -LiteralPath $trellis2Src) {
+            Copy-Item -Recurse -LiteralPath $trellis2Src -Destination $trellis2Dest
+            OK "TRELLIS.2 package copied to backend"
+        } else {
+            Warn "TRELLIS.2 package not found in repo"
+        }
+    } else {
+        Warn "Failed to clone TRELLIS.2 repo - skipping TRELLIS.2 integration"
+    }
 }
 
 # ── TripoSR ────────────────────────────────────────────────────────────────────
@@ -334,11 +499,33 @@ except Exception as e:
 try:
     trellis_pkg = pathlib.Path('backend/trellis')
     if trellis_pkg.exists():
+        import os
+        os.environ.setdefault('ATTN_BACKEND', 'xformers')
+        os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
         print(f'  TRELLIS package: found ({len(list(trellis_pkg.iterdir()))} items)')
+        from trellis.pipelines import TrellisImageTo3DPipeline
+        print('  TRELLIS import: OK')
     else:
         print('  TRELLIS package: not found (CUDA-only feature)')
 except Exception as e:
     print(f'  TRELLIS: FAILED - {e}')
+
+try:
+    trellis2_pkg = pathlib.Path('backend/trellis2')
+    if trellis2_pkg.exists():
+        print(f'  TRELLIS.2 package: found ({len(list(trellis2_pkg.iterdir()))} items)')
+        import importlib.util
+        missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
+        if missing:
+            missing_str = ', '.join(missing)
+            print('  TRELLIS.2 runtime deps missing: ' + missing_str + ' (TRELLIS.2 disabled)')
+        else:
+            from trellis2.pipelines import Trellis2ImageTo3DPipeline
+            print('  TRELLIS.2 import: OK')
+    else:
+        print('  TRELLIS.2 package: not found (optional CUDA feature)')
+except Exception as e:
+    print(f'  TRELLIS.2: FAILED - {e}')
 
 try:
     from rembg import remove

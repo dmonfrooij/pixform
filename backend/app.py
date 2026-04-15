@@ -42,6 +42,12 @@ models = {
     "rembg_sess": None,
     "runtime_device": "cpu",
 }
+model_health = {
+    "triposr": {"status": "pending", "error": None},
+    "hunyuan": {"status": "pending", "error": None},
+    "trellis": {"status": "pending", "error": None},
+    "rembg": {"status": "pending", "error": None},
+}
 jobs: dict = {}
 
 VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
@@ -93,6 +99,12 @@ def resolve_runtime_device() -> str:
     return "cpu"
 
 
+def set_model_health(name: str, status: str, error: Optional[str] = None):
+    if name in model_health:
+        model_health[name]["status"] = status
+        model_health[name]["error"] = error
+
+
 # ── Model loading ─────────────────────────────────────────────────────────────
 
 def load_all_models():
@@ -103,17 +115,21 @@ def load_all_models():
     logger.info(f"Runtime device: {runtime_device}")
 
     # rembg session (RMBG-1.4 — best background removal quality)
+    set_model_health("rembg", "loading")
     try:
         from rembg import new_session
         models["rembg_sess"] = new_session("isnet-general-use")
+        set_model_health("rembg", "loaded")
         logger.info("✅ rembg (ISNet) background remover loaded")
     except Exception as e:
         logger.warning(f"rembg failed: {e}")
         try:
             from rembg import new_session
             models["rembg_sess"] = new_session("u2net")
+            set_model_health("rembg", "loaded")
             logger.info("✅ rembg (u2net) background remover loaded")
         except Exception as e2:
+            set_model_health("rembg", "failed", str(e2))
             logger.warning(f"rembg fallback failed: {e2}")
 
     if runtime_device == "cuda":
@@ -126,6 +142,7 @@ def load_all_models():
         logger.warning("No GPU backend available — running on CPU")
 
     # TripoSR
+    set_model_health("triposr", "loading")
     try:
         from tsr.system import TSR
         logger.info("Loading TripoSR model (~1 GB)...")
@@ -137,16 +154,21 @@ def load_all_models():
         m.renderer.set_chunk_size(131072 if runtime_device == "cuda" else 65536)
         m.to(runtime_device)
         models["triposr"] = m
+        set_model_health("triposr", "loaded")
         logger.info(f"✅ TripoSR loaded on {runtime_device}")
     except Exception as e:
+        set_model_health("triposr", "failed", str(e))
         logger.warning(f"TripoSR failed to load: {e}")
 
     # Hunyuan3D-2 shape
     if runtime_device != "cuda":
+        set_model_health("hunyuan", "skipped", "CUDA/NVIDIA required")
+        set_model_health("trellis", "skipped", "CUDA/NVIDIA required")
         logger.warning("Hunyuan3D-2 skipped: currently supported only on CUDA/NVIDIA")
         return
 
     try:
+        set_model_health("hunyuan", "loading")
         # Ensure hy3dgen is on path (it's a folder, not an installed package)
         _p = BASE_DIR / "hy3dgen"
         if _p.exists() and str(_p) not in sys.path:
@@ -159,20 +181,27 @@ def load_all_models():
             device="cuda",
         )
         models["hunyuan"] = pipe
+        set_model_health("hunyuan", "loaded")
         logger.info("✅ Hunyuan3D-2 loaded")
     except Exception as e:
+        set_model_health("hunyuan", "failed", str(e))
         logger.warning(f"Hunyuan3D-2 failed to load: {e}")
 
     # TRELLIS (CUDA-only, 12+ GB VRAM recommended)
     try:
+        set_model_health("trellis", "loading")
         os.environ.setdefault("SPCONV_ALGO", "native")
+        os.environ.setdefault("ATTN_BACKEND", "xformers")
+        os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
         from trellis.pipelines import TrellisImageTo3DPipeline
         logger.info("Loading TRELLIS model (~16 GB first time, cached after)...")
         pipe = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
         pipe.cuda()
         models["trellis"] = pipe
+        set_model_health("trellis", "loaded")
         logger.info("✅ TRELLIS loaded")
     except Exception as e:
+        set_model_health("trellis", "failed", str(e))
         logger.warning(f"TRELLIS failed to load: {e}")
 
 
@@ -873,6 +902,14 @@ async def health():
         "mps":        mps_ok,
         "runtime_device": models.get("runtime_device", "cpu"),
         "gpu":        torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "triposr_status": model_health["triposr"]["status"],
+        "triposr_error": model_health["triposr"]["error"],
+        "hunyuan_status": model_health["hunyuan"]["status"],
+        "hunyuan_error": model_health["hunyuan"]["error"],
+        "trellis_status": model_health["trellis"]["status"],
+        "trellis_error": model_health["trellis"]["error"],
+        "rembg_status": model_health["rembg"]["status"],
+        "rembg_error": model_health["rembg"]["error"],
     }
 
 

@@ -122,7 +122,10 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
 
   echo "== Installing TRELLIS (best-quality model, CUDA profile) =="
   rm -rf trellis_repo
-  git clone --depth 1 https://github.com/microsoft/TRELLIS.git trellis_repo
+  git clone --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.git trellis_repo
+  if [[ -d trellis_repo ]]; then
+    git -C trellis_repo submodule update --init --recursive --depth 1 >/dev/null 2>&1 || true
+  fi
 
   # TRELLIS core runtime dependencies
   # xformers 0.0.28.post3 matches torch 2.5.1 on the cu124 index.
@@ -133,7 +136,7 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
   "$PY" -m pip install spconv-cu120 || echo "[WARN] spconv install failed"
   "$PY" -m pip install \
     "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" \
-    xatlas pyvista pymeshfix igraph || echo "[WARN] Some TRELLIS deps failed"
+    easydict xatlas pyvista pymeshfix igraph || echo "[WARN] Some TRELLIS deps failed"
 
   # nvdiffrast — enables textured GLB export (optional)
   git clone https://github.com/NVlabs/nvdiffrast.git /tmp/pixform_nvdiffrast 2>/dev/null || true
@@ -153,6 +156,34 @@ if [[ "$RUNTIME_DEVICE" == "cuda" ]]; then
   if [[ -d trellis_repo/trellis ]]; then
     cp -R trellis_repo/trellis backend/trellis
     echo "[OK] TRELLIS copied to backend"
+    "$PY" - <<'PY'
+from pathlib import Path
+
+p = Path('backend/trellis/representations/mesh/flexicubes/flexicubes.py')
+if p.exists():
+    txt = p.read_text(encoding='utf-8')
+    old = 'from kaolin.utils.testing import check_tensor\n'
+    new = '''try:
+    from kaolin.utils.testing import check_tensor
+except ImportError:
+    def check_tensor(tensor, shape, throw=False):
+        ok = torch.is_tensor(tensor)
+        if ok and shape is not None:
+            if tensor.dim() != len(shape):
+                ok = False
+            else:
+                for actual, expected in zip(tensor.shape, shape):
+                    if expected is not None and actual != expected:
+                        ok = False
+                        break
+        if throw and not ok:
+            raise ValueError("Tensor does not match expected shape")
+        return ok
+'''
+    if old in txt and 'except ImportError:' not in txt:
+        p.write_text(txt.replace(old, new), encoding='utf-8')
+        print('[OK] flexicubes.py patched (kaolin fallback)')
+PY
   else
     echo "[WARN] TRELLIS trellis/ folder not found in repo"
   fi
@@ -182,6 +213,8 @@ import pathlib
 trellis_path = pathlib.Path('backend/trellis')
 if trellis_path.exists():
     print('TRELLIS package: found')
+    from trellis.pipelines import TrellisImageTo3DPipeline
+    print('TRELLIS import: OK')
 else:
     print('TRELLIS package: not found (CUDA-only feature)')
 PY

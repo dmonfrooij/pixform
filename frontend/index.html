@@ -165,7 +165,7 @@ main{flex:1;display:grid;grid-template-columns:380px 1fr;overflow:hidden}
 .toggle-btn.active{background:var(--accent);color:#080810}
 
 /* Model selector */
-.model-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.model-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .model-card{
   border:1.5px solid var(--border2);border-radius:3px;padding:12px;
   cursor:pointer;transition:all .2s;background:var(--s2);position:relative;
@@ -396,6 +396,11 @@ main{flex:1;display:grid;grid-template-columns:380px 1fr;overflow:hidden}
         <div class="model-desc">Best quality — textured GLB</div>
         <span class="model-badge badge-quality" id="trellis-badge">~5–10 MIN</span>
       </div>
+      <div class="model-card" id="card-trellis2" onclick="selectModel('trellis2')">
+        <div class="model-name">TRELLIS.2</div>
+        <div class="model-desc">Experimental next-gen quality</div>
+        <span class="model-badge badge-quality" id="trellis2-badge">~6–12 MIN</span>
+      </div>
     </div>
   </div>
 
@@ -531,17 +536,18 @@ let pollTimer = null;
 let history = JSON.parse(localStorage.getItem('pixform_history') || '[]');
 let hunyuanAvailable = true;
 let trellisAvailable = true;
+let trellis2Available = true;
 
 // ── Quality presets ──────────────────────────────────────────────────────────
 const PRESETS = {
-  //            triposr_res  hy_steps  post       label (triposr / hunyuan / trellis)
-  draft:   { res:  128, steps: 10,  post: 'none',     info: '~10 sec / ~1 min / ~3 min' },
-  low:     { res:  192, steps: 20,  post: 'light',    info: '~30 sec / ~2 min / ~4 min' },
-  medium:  { res:  256, steps: 30,  post: 'light',    info: '~1 min / ~3 min / ~5 min'  },
-  high:    { res:  512, steps: 50,  post: 'standard', info: '~15 min / ~5 min / ~8 min' },
-  ultra:   { res:  640, steps: 75,  post: 'standard', info: '~30 min / ~8 min / ~10 min'},
-  extreme: { res:  768, steps: 100, post: 'heavy',    info: '~45 min / ~12 min / ~12 min'},
-  maximum: { res: 1024, steps: 100, post: 'heavy',    info: '~60+ min / ~15 min / ~15 min'},
+  //            triposr_res  hy_steps  post       label (triposr / hunyuan / trellis / trellis2)
+  draft:   { res:  128, steps: 10,  post: 'none',     info: '~10 sec / ~1 min / ~3 min / ~4 min' },
+  low:     { res:  192, steps: 20,  post: 'light',    info: '~30 sec / ~2 min / ~4 min / ~5 min' },
+  medium:  { res:  256, steps: 30,  post: 'light',    info: '~1 min / ~3 min / ~5 min / ~6 min'  },
+  high:    { res:  512, steps: 50,  post: 'standard', info: '~15 min / ~5 min / ~8 min / ~8 min' },
+  ultra:   { res:  640, steps: 75,  post: 'standard', info: '~30 min / ~8 min / ~10 min / ~10 min'},
+  extreme: { res:  768, steps: 100, post: 'heavy',    info: '~45 min / ~12 min / ~12 min / ~12 min'},
+  maximum: { res: 1024, steps: 100, post: 'heavy',    info: '~60+ min / ~15 min / ~15 min / ~15 min'},
   custom:  null,
 };
 
@@ -553,7 +559,7 @@ function applyPreset(key) {
     (selectedModel === 'triposr' && isCustom) ? '' : 'none';
   // Hunyuan and TRELLIS: always show steps row so user can adjust quality
   document.getElementById('steps-row').style.display =
-    (selectedModel === 'hunyuan' || selectedModel === 'trellis') ? '' : 'none';
+    (selectedModel === 'hunyuan' || selectedModel === 'trellis' || selectedModel === 'trellis2') ? '' : 'none';
   if (p) {
     document.getElementById('resSelect').value   = p.res;
     document.getElementById('stepsSelect').value = p.steps;
@@ -565,9 +571,12 @@ function applyPreset(key) {
     } else if (selectedModel === 'hunyuan') {
       document.getElementById('quality-sub').textContent =
         `${p.steps} diffusion steps · Post: ${p.post} · ${infoParts[1].trim()}`;
-    } else {
+    } else if (selectedModel === 'trellis') {
       document.getElementById('quality-sub').textContent =
         `${p.steps} TRELLIS steps · Post: ${p.post} · ${(infoParts[2] || infoParts[1] || '').trim()}`;
+    } else {
+      document.getElementById('quality-sub').textContent =
+        `${p.steps} TRELLIS.2 steps · Post: ${p.post} · ${(infoParts[3] || infoParts[2] || '').trim()}`;
     }
   } else {
     document.getElementById('quality-sub').textContent = 'Configure manually below';
@@ -582,6 +591,8 @@ async function checkHealth() {
   const hunyuanCard  = document.getElementById('card-hunyuan');
   const trellisBadge = document.getElementById('trellis-badge');
   const trellisCard  = document.getElementById('card-trellis');
+  const trellis2Badge = document.getElementById('trellis2-badge');
+  const trellis2Card  = document.getElementById('card-trellis2');
   try {
     const r = await fetch(`${API}/health`);
     const d = await r.json();
@@ -589,6 +600,7 @@ async function checkHealth() {
     if (d.triposr)  parts.push('TripoSR ✓');
     if (d.hunyuan)  parts.push('Hunyuan3D-2 ✓');
     if (d.trellis)  parts.push('TRELLIS ✓');
+    if (d.trellis2) parts.push('TRELLIS.2 ✓');
     if (d.rembg)    parts.push('BG Removal ✓');
     if (d.mps)      parts.push('MPS ✓');
     if (!d.cuda)    parts.push('⚠ No GPU');
@@ -599,28 +611,47 @@ async function checkHealth() {
 
     if (!d.hunyuan) {
       hunyuanAvailable = false;
-      hunyuanBadge.textContent = 'NOT LOADED';
+      hunyuanBadge.textContent = d.hunyuan_status === 'loading' ? 'LOADING' : (d.hunyuan_status === 'failed' ? 'LOAD FAIL' : 'NOT LOADED');
       hunyuanBadge.className = 'model-badge badge-unavail';
+      hunyuanCard.title = d.hunyuan_error || '';
       hunyuanCard.style.opacity = '.5';
       if (selectedModel === 'hunyuan') selectModel('triposr');
     } else {
       hunyuanAvailable = true;
       hunyuanBadge.textContent = '~3–6 MIN';
       hunyuanBadge.className = 'model-badge badge-quality';
+      hunyuanCard.title = '';
       hunyuanCard.style.opacity = '1';
     }
 
     if (!d.trellis) {
       trellisAvailable = false;
-      trellisBadge.textContent = 'NOT LOADED';
+      trellisBadge.textContent = d.trellis_status === 'loading' ? 'LOADING' : (d.trellis_status === 'failed' ? 'LOAD FAIL' : 'NOT LOADED');
       trellisBadge.className = 'model-badge badge-unavail';
+      trellisCard.title = d.trellis_error || '';
       trellisCard.style.opacity = '.5';
       if (selectedModel === 'trellis') selectModel('triposr');
     } else {
       trellisAvailable = true;
       trellisBadge.textContent = '~5–10 MIN';
       trellisBadge.className = 'model-badge badge-quality';
+      trellisCard.title = '';
       trellisCard.style.opacity = '1';
+    }
+
+    if (!d.trellis2) {
+      trellis2Available = false;
+      trellis2Badge.textContent = d.trellis2_status === 'loading' ? 'LOADING' : (d.trellis2_status === 'failed' ? 'LOAD FAIL' : 'NOT READY');
+      trellis2Badge.className = 'model-badge badge-unavail';
+      trellis2Card.title = d.trellis2_error || '';
+      trellis2Card.style.opacity = '.5';
+      if (selectedModel === 'trellis2') selectModel('triposr');
+    } else {
+      trellis2Available = true;
+      trellis2Badge.textContent = '~6–12 MIN';
+      trellis2Badge.className = 'model-badge badge-quality';
+      trellis2Card.title = '';
+      trellis2Card.style.opacity = '1';
     }
   } catch {
     dot.className = 'status-dot error';
@@ -666,10 +697,15 @@ function selectModel(m) {
     alert('TRELLIS is not loaded yet. Check server health and GPU setup.');
     return;
   }
+  if (m === 'trellis2' && !trellis2Available) {
+    alert('TRELLIS.2 is not ready. Check /health for missing runtime dependencies.');
+    return;
+  }
   selectedModel = m;
   document.getElementById('card-triposr').classList.toggle('selected', m === 'triposr');
   document.getElementById('card-hunyuan').classList.toggle('selected', m === 'hunyuan');
   document.getElementById('card-trellis').classList.toggle('selected', m === 'trellis');
+  document.getElementById('card-trellis2').classList.toggle('selected', m === 'trellis2');
   applyPreset(document.getElementById('qualityPreset').value);
 }
 
