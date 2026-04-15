@@ -57,6 +57,13 @@ Werkt ook zonder ondersteunde GPU, maar duidelijk trager. In dat geval is vooral
 - PowerShell
 - Voor beste prestaties: NVIDIA GPU met recente driver
 
+Voor CUDA-profielen (`-Profile nvidia`) gelden extra vereisten:
+
+- NVIDIA driver + `nvidia-smi` beschikbaar
+- Visual Studio Build Tools (C++ toolchain, `cl.exe`) voor native builds
+- CUDA Toolkit met `nvcc` beschikbaar op `PATH`
+- Aanbevolen: toolkitversie gelijk aan de CUDA-versie van geïnstalleerde PyTorch (standaard in dit script: `12.4`)
+
 ### macOS
 - `python3` beschikbaar
 - macOS shell met bash
@@ -114,6 +121,23 @@ cd C:\Users\Eiboer\PycharmProjects\pixform
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 -Profile auto
 ```
+
+Voor `-Profile nvidia` kun je vooraf expliciet de toolkit in de huidige shell zetten (voorbeeld voor CUDA 12.4):
+
+```powershell
+$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4'
+$env:CUDA_PATH = $env:CUDA_HOME
+$env:Path = "$env:CUDA_HOME\bin;$env:CUDA_HOME\libnvvp;$env:Path"
+nvcc --version
+```
+
+Controleer daarna desnoods ook welke CUDA-versie PyTorch in de venv gebruikt:
+
+```powershell
+.\venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.version.cuda)"
+```
+
+Als `torch.version.cuda` en `nvcc --version` niet matchen, kunnen optionele native builds (zoals `nvdiffrast` en `o-voxel` voor TRELLIS.2) worden overgeslagen.
 
 Beschikbare profielen voor `install.ps1`:
 
@@ -366,7 +390,17 @@ Dat is niet altijd een harde fout. In de backend zit expliciet fallback-logica:
 - eerst poging tot textured GLB
 - daarna fallback naar gewone GLB-export
 
-### 4. Installatie duurt lang
+### 4. TRELLIS laadt niet op Windows
+Controleer:
+- draai installatie met `-Profile nvidia`
+- controleer `/health` op `trellis_status` en `trellis_error`
+- gebruik `xformers` als attention-backend (de backend zet dit standaard op Windows)
+
+Extra context:
+- een melding over ontbrekende `triton` is meestal een performance-waarschuwing en niet per se een load-fout
+- de `kaolin` import in `flexicubes.py` heeft een fallback in deze codebase
+
+### 5. Installatie duurt lang
 Dat is normaal voor:
 - PyTorch
 - Hunyuan3D-2 dependencies
