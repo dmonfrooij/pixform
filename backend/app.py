@@ -40,14 +40,16 @@ models = {
     "triposr":   None,
     "hunyuan":   None,
     "trellis":   None,
+    "trellis2":  None,
     "rembg_sess": None,
     "runtime_device": "cpu",
 }
 model_health = {
-    "triposr": {"status": "pending", "error": None},
-    "hunyuan": {"status": "pending", "error": None},
-    "trellis": {"status": "pending", "error": None},
-    "rembg": {"status": "pending", "error": None},
+    "triposr":  {"status": "pending", "error": None},
+    "hunyuan":  {"status": "pending", "error": None},
+    "trellis":  {"status": "pending", "error": None},
+    "trellis2": {"status": "pending", "error": None},
+    "rembg":    {"status": "pending", "error": None},
 }
 jobs: dict = {}
 
@@ -220,6 +222,37 @@ def load_all_models():
     except Exception as e:
         set_model_health("trellis", "failed", str(e))
         logger.warning(f"TRELLIS failed to load: {e}")
+
+    # TRELLIS.2 (CUDA-only, requires cumesh + flex_gemm + o_voxel + spconv)
+    try:
+        import importlib as _il
+        set_model_health("trellis2", "loading")
+        _trellis2_pkg = BASE_DIR / "trellis2"
+        if not _trellis2_pkg.exists():
+            raise ImportError("trellis2 package not found in backend/")
+
+        # Probe required native deps before attempting a full load
+        _missing = [d for d in ("cumesh", "flex_gemm") if _il.util.find_spec(d) is None]
+        if _missing:
+            raise ImportError(f"Missing TRELLIS.2 runtime deps: {', '.join(_missing)}")
+
+        os.environ.setdefault("SPARSE_CONV_BACKEND", "spconv")
+        os.environ.setdefault("ATTN_BACKEND", "xformers")
+        os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
+
+        from trellis2.pipelines import Trellis2ImageTo3DPipeline
+        logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
+        pipe2 = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
+        pipe2.cuda()
+        models["trellis2"] = pipe2
+        set_model_health("trellis2", "loaded")
+        logger.info("✅ TRELLIS.2 loaded")
+    except ImportError as e:
+        set_model_health("trellis2", "failed", str(e))
+        logger.warning(f"TRELLIS.2 failed to load: {e}")
+    except Exception as e:
+        set_model_health("trellis2", "failed", str(e))
+        logger.warning(f"TRELLIS.2 failed to load: {e}")
 
 
 @asynccontextmanager
@@ -891,6 +924,148 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, status="error", message=str(e))
 
 
+# ── TRELLIS.2 pipeline ───────────────────────────────────────────────────────
+
+async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: dict):
+    try:
+        import torch
+        from PIL import Image
+
+        t_start = time.time()
+        upd(job_id, status="processing", progress=5, message="Loading image...")
+
+        img = Image.open(image_path).convert("RGBA")
+
+        # Background removal (trellis2 honours RGBA alpha – no double-processing)
+        if settings.get("remove_bg", True):
+            upd(job_id, progress=10, message="Removing background...")
+            loop = asyncio.get_event_loop()
+            img = await loop.run_in_executor(None, remove_background, img, job_id)
+
+        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS.2...")
+        upd(job_id, progress=25, message="This takes 6–12 minutes, please wait...")
+
+        loop = asyncio.get_event_loop()
+        steps = settings.get("steps", 50)
+
+        def infer():
+            with torch.no_grad():
+                return models["trellis2"].run(
+                    img,
+                    seed=42,
+                    shape_slat_sampler_params={"steps": steps},
+                    tex_slat_sampler_params={"steps": steps},
+                    preprocess_image=True,
+                )
+
+        upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...")
+        outputs = await loop.run_in_executor(None, infer)
+
+        upd(job_id, progress=78, message="3D structure generated ✔")
+
+        # outputs is List[MeshWithVoxel]; take first sample
+        m = outputs[0]
+
+        # ── Textured GLB export (requires cumesh + nvdiffrast) ────────────────
+        glb_textured = False
+
+        def make_textured_glb():
+            try:
+                import o_voxel
+                glb = o_voxel.postprocess.to_glb(
+                    vertices=m.vertices,
+                    faces=m.faces,
+                    attr_volume=m.attrs,
+                    coords=m.coords,
+                    attr_layout=m.layout,
+                    voxel_size=m.voxel_size,
+                    aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+                    decimation_target=1_000_000,
+                    texture_size=2048,
+                )
+                glb.export(str(out_dir / "model.glb"))
+                return True
+            except Exception as e:
+                logger.warning(
+                    f"TRELLIS.2 textured GLB failed (cumesh/nvdiffrast may not be installed): {e}"
+                )
+                return False
+
+        glb_textured = await loop.run_in_executor(None, make_textured_glb)
+
+        # ── Extract trimesh for STL / 3MF / OBJ (and plain GLB fallback) ─────
+        def extract_trimesh():
+            import trimesh as _trimesh
+            return _trimesh.Trimesh(
+                vertices=m.vertices.cpu().numpy(),
+                faces=m.faces.cpu().numpy(),
+                process=True,
+            )
+
+        raw_mesh = await loop.run_in_executor(None, extract_trimesh)
+
+        if len(raw_mesh.faces) == 0:
+            raise RuntimeError("TRELLIS.2 produced an empty mesh")
+
+        post_level = settings.get("post", "standard")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        mesh = await loop.run_in_executor(None, postprocess_mesh, raw_mesh, job_id, post_level)
+
+        # ── Export ─────────────────────────────────────────────────────────────
+        upd(job_id, progress=95, message="Exporting files...")
+
+        stl      = out_dir / "model.stl"
+        tmf      = out_dir / "model.3mf"
+        glb_path = out_dir / "model.glb"
+        obj      = out_dir / "model.obj"
+
+        try:
+            mesh.export(str(stl))
+        except Exception as e:
+            raise RuntimeError(f"STL export failed: {e}") from e
+
+        try:
+            mesh.export(str(tmf))
+        except Exception:
+            _export_3mf_manual(mesh, tmf)
+
+        try:
+            mesh.export(str(obj))
+        except Exception as e:
+            logger.warning(f"OBJ export failed: {e}")
+
+        if not glb_textured:
+            try:
+                mesh.export(str(glb_path))
+            except Exception as e:
+                logger.warning(f"Plain GLB export failed: {e}")
+
+        upd(
+            job_id,
+            stl_url=f"/outputs/{job_id}/model.stl"  if stl.exists()      else None,
+            tmf_url=f"/outputs/{job_id}/model.3mf"  if tmf.exists()      else None,
+            glb_url=f"/outputs/{job_id}/model.glb"  if glb_path.exists() else None,
+            obj_url=f"/outputs/{job_id}/model.obj"  if obj.exists()      else None,
+            poly_count=len(mesh.faces),
+        )
+
+        render_preview(mesh, out_dir / "preview.png")
+
+        elapsed = round(time.time() - t_start, 1)
+        glb_note = " (textured)" if glb_textured else ""
+        upd(job_id,
+            status="done", progress=100,
+            message=f"Done in {elapsed}s — {len(mesh.faces):,} polygons{glb_note}",
+            model_used="TRELLIS.2",
+            time_taken=elapsed,
+            preview_url=f"/outputs/{job_id}/preview.png",
+        )
+
+    except Exception as e:
+        logger.error(f"TRELLIS.2 error: {e}", exc_info=True)
+        upd(job_id, status="error", message=str(e))
+
+
 # ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
@@ -918,6 +1093,7 @@ async def health():
         "triposr":    models["triposr"] is not None,
         "hunyuan":    models["hunyuan"] is not None,
         "trellis":    models["trellis"] is not None,
+        "trellis2":   models["trellis2"] is not None,
         "rembg":      models["rembg_sess"] is not None,
         "cuda":       torch.cuda.is_available(),
         "mps":        mps_ok,
@@ -929,6 +1105,8 @@ async def health():
         "hunyuan_error": model_health["hunyuan"]["error"],
         "trellis_status": model_health["trellis"]["status"],
         "trellis_error": model_health["trellis"]["error"],
+        "trellis2_status": model_health["trellis2"]["status"],
+        "trellis2_error": model_health["trellis2"]["error"],
         "rembg_status": model_health["rembg"]["status"],
         "rembg_error": model_health["rembg"]["error"],
     }
@@ -945,8 +1123,8 @@ async def convert(
     post:       str  = "standard",   # none | light | standard | heavy
 ):
     model = (model or "triposr").lower().strip()
-    if model not in {"triposr", "hunyuan", "trellis"}:
-        raise HTTPException(400, "Invalid model. Use: triposr, hunyuan, or trellis")
+    if model not in {"triposr", "hunyuan", "trellis", "trellis2"}:
+        raise HTTPException(400, "Invalid model. Use: triposr, hunyuan, trellis, or trellis2")
 
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "Images only")
@@ -978,6 +1156,11 @@ async def convert(
             raise HTTPException(503, "TRELLIS model is not loaded. Check /health and GPU setup.")
         run_fn = run_trellis
         model_label = "TRELLIS"
+    elif model == "trellis2":
+        if models["trellis2"] is None:
+            raise HTTPException(503, "TRELLIS.2 model is not loaded. Check /health and GPU setup.")
+        run_fn = run_trellis2
+        model_label = "TRELLIS.2"
     elif models["triposr"] is not None:
         run_fn = run_triposr
         model_label = "TripoSR"
