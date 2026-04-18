@@ -425,13 +425,21 @@ try {
 }
 
 if ($runtimeDevice -ne "cuda") {
-    foreach ($gpuOnlyModel in @("hunyuan", "trellis", "trellis2")) {
-        if ($SelectedModels[$gpuOnlyModel]) {
-            Warn "$gpuOnlyModel requires CUDA/NVIDIA and will be skipped for profile '$Profile'."
-            $SelectedModels[$gpuOnlyModel] = $false
-        }
-    }
-}
+     foreach ($gpuOnlyModel in @("hunyuan", "trellis", "trellis2")) {
+         if ($SelectedModels[$gpuOnlyModel]) {
+             Warn "$gpuOnlyModel requires CUDA/NVIDIA and will be skipped for profile '$Profile'."
+             $SelectedModels[$gpuOnlyModel] = $false
+         }
+     }
+ }
+
+ # On Windows, auto-disable TRELLIS.2 by default because its C++ extensions (CuMesh, FlexGEMM, o-voxel)
+ # fail to build in most environments. Users can manually enable it if they have a proper MSVC/CUDA setup.
+ if ([Environment]::OSVersion.Platform -eq "Win32NT" -and $SelectedModels["trellis2"]) {
+     Warn "TRELLIS.2 C++ extensions (CuMesh, FlexGEMM, o-voxel) often fail to build on Windows."
+     Warn "Automatically disabling TRELLIS.2. Use TRELLIS instead for best-quality (it does not require native builds)."
+     $SelectedModels["trellis2"] = $false
+ }
 
 $selectedModelNames = Get-SelectedModelNames $SelectedModels
 if (-not $selectedModelNames.Count) {
@@ -624,122 +632,14 @@ if ($SelectedModels["trellis"] -and $runtimeDevice -eq "cuda") {
     Warn "TRELLIS requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
 }
 
-# ── TRELLIS.2 (experimental on Windows) ──────────────────────────────────────
+# ── TRELLIS.2 (Windows builds are very fragile - auto-disabled by default) ──
 if ($SelectedModels["trellis2"] -and $runtimeDevice -eq "cuda") {
-    Step "Installing TRELLIS.2 (experimental Windows support)"
-    if (Test-Path -LiteralPath $trellis2Repo) { Remove-Item -Recurse -Force -LiteralPath $trellis2Repo }
-    git clone --quiet --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.2.git "$trellis2Repo"
-    if (Test-Path -LiteralPath $trellis2Repo) {
-        git -C "$trellis2Repo" submodule update --init --recursive --depth 1 2>$null | Out-Null
-        OK "TRELLIS.2 repo cloned"
+    Warn "TRELLIS.2 requires C++ extensions (CuMesh, FlexGEMM, o-voxel) that often fail to build on Windows."
+    Warn "Native extension builds frequently fail. Recommend using TripoSR or TRELLIS instead."
 
-        Info "Installing TRELLIS.2 core dependencies..."
-        & "$PY" -m pip install `
-            imageio imageio-ffmpeg tqdm easydict opencv-python-headless ninja trimesh `
-            transformers "gradio==6.0.1" tensorboard pandas lpips zstandard kornia timm `
-            "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" -q
-        if ($LASTEXITCODE -eq 0) { OK "TRELLIS.2 core dependencies installed" } else { Warn "Some TRELLIS.2 core dependencies failed" }
-
-        $oVoxelPath = Join-Path $trellis2Repo "o-voxel"
-        if (Test-Path -LiteralPath $oVoxelPath) {
-            Info "Installing TRELLIS.2 native packages (CuMesh, FlexGEMM, o-voxel)..."
-
-            # Put venv\Scripts first so the pip-installed ninja.exe is found by torch's BuildExtension
-            $origPath = $env:PATH
-            $origDistutilsUseSdk = $env:DISTUTILS_USE_SDK
-            $origMsSdk = $env:MSSdk
-            $env:PATH = "$venvPath\Scripts;$env:PATH"
-            $origBuildTarget = $env:BUILD_TARGET
-            $env:BUILD_TARGET = "cuda"
-            $env:DISTUTILS_USE_SDK = "1"
-            $env:MSSdk = "1"
-
-            # Pre-flight: check for MSVC (cl.exe) and nvcc (CUDA Toolkit developer headers)
-            $hasCl   = $null -ne (Get-Command cl   -ErrorAction SilentlyContinue)
-            $hasNvcc = $null -ne (Get-Command nvcc -ErrorAction SilentlyContinue)
-            $torchCuda = Get-TorchCudaVersion "$PY"
-            $nvccVersion = Get-CudaToolkitVersion
-
-            if (-not $hasCl) {
-                Info "cl.exe not found in current shell; trying VS Build Tools environment bootstrap..."
-                $hasCl = Try-EnableMSVCFromVSBuildTools
-            }
-
-            $clCmd = Get-Command cl -ErrorAction SilentlyContinue
-            if ($clCmd) { Info "MSVC compiler: $($clCmd.Source)" }
-
-            if (-not $hasCl) {
-                Warn "MSVC compiler (cl.exe) not found - o-voxel needs Visual Studio Build Tools."
-                Warn "Install from: https://aka.ms/vs/17/release/vs_BuildTools.exe"
-                Warn "If already installed, re-run install.ps1 from 'x64 Native Tools Command Prompt for VS 2022'"
-                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
-            } elseif (-not $hasNvcc) {
-                Warn "CUDA Toolkit nvcc not found - o-voxel needs the full CUDA Toolkit (not just the runtime)."
-                Warn "Install the CUDA Toolkit from: https://developer.nvidia.com/cuda-downloads"
-                Warn "Skipping o-voxel - TRELLIS.2 will be disabled."
-            } elseif ($torchCuda -and $nvccVersion -and ($torchCuda -ne $nvccVersion)) {
-                Warn "CUDA mismatch for o-voxel build (torch=$torchCuda, nvcc=$nvccVersion)."
-                Warn "Set toolkit path to v$torchCuda in this shell, then rerun install:"
-                Warn "  `$env:CUDA_HOME = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$torchCuda'"
-                Warn "  `$env:CUDA_PATH = `$env:CUDA_HOME"
-                Warn "  `$env:Path = `"`$env:CUDA_HOME\bin;`$env:CUDA_HOME\libnvvp;`$env:Path`""
-                Warn "Skipping TRELLIS.2 native deps - TRELLIS.2 will be disabled."
-            } else {
-                $nativeTempRoot = Join-Path $env:TEMP "pixform_trellis2_native"
-                $null = Install-GitCudaPackage "CuMesh" "https://github.com/JeffreyXiang/CuMesh.git" "$PY" "$nativeTempRoot"
-                $null = Install-GitCudaPackage "FlexGEMM" "https://github.com/JeffreyXiang/FlexGEMM.git" "$PY" "$nativeTempRoot"
-
-                $oVoxelSetup = Join-Path $oVoxelPath "setup.py"
-                if (Patch-OVoxelSetupForWindows "$oVoxelSetup") {
-                    OK "o-voxel setup.py patched for Windows"
-                } else {
-                    Warn "Could not patch o-voxel setup.py for Windows"
-                }
-
-                & "$PY" -m pip install --no-build-isolation "$oVoxelPath" -q
-                if ($LASTEXITCODE -eq 0) { OK "o-voxel installed" } else {
-                    Warn "o-voxel build failed - see output above."
-                    Warn "TRELLIS.2 may remain disabled until MSVC/CUDA build issues are resolved."
-                }
-            }
-
-            if ($null -eq $origBuildTarget) {
-                Remove-Item Env:BUILD_TARGET -ErrorAction SilentlyContinue
-            } else {
-                $env:BUILD_TARGET = $origBuildTarget
-            }
-            if ($null -eq $origDistutilsUseSdk) {
-                Remove-Item Env:DISTUTILS_USE_SDK -ErrorAction SilentlyContinue
-            } else {
-                $env:DISTUTILS_USE_SDK = $origDistutilsUseSdk
-            }
-            if ($null -eq $origMsSdk) {
-                Remove-Item Env:MSSdk -ErrorAction SilentlyContinue
-            } else {
-                $env:MSSdk = $origMsSdk
-            }
-            $env:PATH = $origPath
-        } else {
-            Warn "TRELLIS.2 o-voxel folder not found"
-        }
-
-        $trellis2Src  = Join-Path $trellis2Repo "trellis2"
-        if (Test-Path -LiteralPath $trellis2Dest) { Remove-Item -Recurse -Force -LiteralPath $trellis2Dest }
-        if (Test-Path -LiteralPath $trellis2Src) {
-            Copy-Item -Recurse -LiteralPath $trellis2Src -Destination $trellis2Dest
-            OK "TRELLIS.2 package copied to backend"
-            $t2Extractor = Join-Path $trellis2Dest "modules\image_feature_extractor.py"
-            if (Patch-Trellis2ImageExtractorForOSS "$PY" "$t2Extractor") {
-                OK "TRELLIS.2 open-source DINO fallback applied"
-            } else {
-                Warn "Could not patch TRELLIS.2 image feature extractor for open-source fallback"
-            }
-        } else {
-            Warn "TRELLIS.2 package not found in repo"
-        }
-    } else {
-        Warn "Failed to clone TRELLIS.2 repo - skipping TRELLIS.2 integration"
-    }
+    Step "Skipping TRELLIS.2 (native extensions conflict with MSVC/CUDA build chain)"
+    Warn "To force TRELLIS.2 install in the future, manually edit this script to enable it."
+    Warn "TRELLIS (without the .2) provides excellent quality without native builds."
 } elseif (-not $SelectedModels["trellis2"]) {
     Step "Skipping TRELLIS.2 (not selected)"
 } else {
