@@ -359,10 +359,10 @@ def load_all_models():
     else:
         try:
             set_model_health("trellis", "loading")
-            # auto is typically faster after a short one-time benchmark; allow override for debugging.
-            spconv_algo = os.getenv("PIXFORM_SPCONV_ALGO", "auto").strip().lower()
+            # native is slower but more predictable on Windows; allow opt-in auto via env override.
+            spconv_algo = os.getenv("PIXFORM_SPCONV_ALGO", "native").strip().lower()
             if spconv_algo not in {"auto", "native"}:
-                spconv_algo = "auto"
+                spconv_algo = "native"
             os.environ["SPCONV_ALGO"] = spconv_algo
             os.environ.setdefault("ATTN_BACKEND", "xformers")
             os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
