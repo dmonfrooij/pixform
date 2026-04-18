@@ -1,12 +1,12 @@
-# PIXFORM — Image to 3D
+# PIXFORM - Image to 3D
 
 PIXFORM converts a single image into a local 3D model with focus on maximum output quality, usable exports, and easy local installation.
 
 Three generation modes are available in this repository:
 
-- **TripoSR** — fastest option, works on `cuda`, `mps` and `cpu`
-- **Hunyuan3D-2** — higher shape quality, currently only on `cuda`
-- **TRELLIS** — highest quality, with GLB export and textured GLB where possible, only on `cuda`
+- **TripoSR** - fastest option, works on `cuda`, `mps` and `cpu`
+- **Hunyuan3D-2** - higher shape quality, currently only on `cuda`
+- **TRELLIS** - highest quality, with GLB export and textured GLB where possible, only on `cuda`
 
 **Export formats:** `STL`, `3MF`, `GLB`, `OBJ`
 
@@ -101,8 +101,8 @@ The backend's device resolution order in `backend/app.py` is:
 3. `cpu`
 
 Alias names that also work:
-- `nvidia` → `cuda`
-- `mac` → `mps`
+- `nvidia` -> `cuda`
+- `mac` -> `mps`
 
 If a requested device is unavailable, PIXFORM automatically falls back to a usable alternative.
 
@@ -148,9 +148,9 @@ If `torch.version.cuda` and `nvcc --version` don't match, optional native builds
 
 Available profiles for `install.ps1`:
 
-- `auto` — uses `cuda` if NVIDIA available, otherwise `cpu`
-- `nvidia` — forces CUDA installation and installs CUDA-only model support
-- `cpu` — installs CPU-only runtime
+- `auto` - uses `cuda` if NVIDIA available, otherwise `cpu`
+- `nvidia` - forces CUDA installation and installs CUDA-only model support
+- `cpu` - installs CPU-only runtime
 
 Model selection values for `install.ps1 -Models`:
 
@@ -181,10 +181,10 @@ chmod +x install_mac.sh PIXFORM.sh
 
 Available profiles for `install_mac.sh`:
 
-- `mac` — uses `mps`
-- `auto` — also chooses `mps` on macOS
-- `cpu` — forces CPU
-- `nvidia` — CUDA profile for systems where explicitly desired
+- `mac` - uses `mps`
+- `auto` - also chooses `mps` on macOS
+- `cpu` - forces CPU
+- `nvidia` - CUDA profile for systems where explicitly desired
 
 What `install_mac.sh` does:
 
@@ -296,12 +296,14 @@ Basic workflow:
 5. Click **Generate**
 6. Download `STL`, `3MF`, `GLB` or `OBJ`
 
+You can press **Stop** while a job is running. Cancellation is best-effort: the current internal stage is allowed to finish safely, then the job moves to `cancelled`.
+
 The backend has these routes for this:
 
-- `GET /health` — model status, device info
-- `POST /convert` — submit image for 3D generation
-- `GET /status/{job_id}` — poll job status
-- `DELETE /jobs/{job_id}` — cancel/delete job
+- `GET /health` - model status, device info
+- `POST /convert` - submit image for 3D generation
+- `GET /status/{job_id}` - poll job status
+- `DELETE /jobs/{job_id}` - cancel/delete job
 
 ---
 
@@ -311,21 +313,21 @@ The presets come directly from the UI in `frontend/index.html`.
 
 | Preset | TripoSR resolution | Hunyuan/TRELLIS steps | Post-processing | Approx time (TripoSR / Hunyuan / TRELLIS) |
 |---|---:|---:|---|---|
-| ⚡ Draft | 128 | 10 | `none` | ~10 sec / ~1 min / ~3 min |
-| 🔹 Low | 192 | 20 | `light` | ~30 sec / ~2 min / ~4 min |
-| 🔷 Medium | 256 | 30 | `light` | ~1 min / ~3 min / ~5 min |
-| ⭐ High | 512 | 50 | `standard` | ~3 min / ~5 min / ~8 min |
-| 🔶 Ultra | 640 | 75 | `standard` | ~5 min / ~8 min / ~10 min |
-| 💎 Extreme | 768 | 100 | `heavy` | ~8 min / ~12 min / ~12 min |
-| 🔥 Maximum | 1024 | 100 | `heavy` | ~12+ min / ~15 min / ~15 min |
-| ✏️ Custom | manual | manual | manual | depends on settings |
+| Draft | 128 | 10 | `none` | ~10 sec / ~1 min / ~3 min |
+| Low | 192 | 20 | `light` | ~30 sec / ~2 min / ~4 min |
+| Medium | 256 | 30 | `light` | ~1 min / ~3 min / ~5 min |
+| High | 512 | 50 | `standard` | ~3 min / ~5 min / ~8 min |
+| Ultra | 640 | 75 | `standard` | ~5 min / ~8 min / ~10 min |
+| Extreme | 768 | 100 | `heavy` | ~8 min / ~12 min / ~12 min |
+| Maximum | 1024 | 100 | `heavy` | ~12+ min / ~15 min / ~15 min |
+| Custom | manual | manual | manual | depends on settings |
 
 Available post-processing levels:
 
-- `none` — no post-processing
-- `light` — basic cleanup and smoothing
-- `standard` — full repair + smoothing + Poisson reconstruction
-- `heavy` — aggressive refinement with voxel remesh fallback
+- `none` - no post-processing
+- `light` - basic cleanup and smoothing
+- `standard` - full repair + smoothing + Poisson reconstruction
+- `heavy` - aggressive refinement with voxel remesh fallback
 
 ---
 
@@ -343,9 +345,9 @@ For best possible output:
 
 Practical choice per situation:
 
-- **Quick testing** → TripoSR + Draft/Low/Medium
-- **Good mesh quality** → Hunyuan3D-2 + High/Ultra
-- **Best possible quality** → TRELLIS + High/Ultra/Extreme
+- **Quick testing** -> TripoSR + Draft/Low/Medium
+- **Good mesh quality** -> Hunyuan3D-2 + High/Ultra
+- **Best possible quality** -> TRELLIS + High/Ultra/Extreme
 
 ---
 
@@ -433,30 +435,39 @@ This is normal for:
 - TRELLIS dependencies
 - first model download at runtime
 
+### 6. TRELLIS can run long before finishing
+TRELLIS post-processing can be heavy. PIXFORM now uses conservative timeout defaults and safe fallback behavior.
+
+Optional tuning via environment variables:
+
+- `PIXFORM_TRELLIS_POST_TIMEOUT_SEC` (default depends on post level)
+- `PIXFORM_TRELLIS_TEXTURE_TIMEOUT_SEC` (default `480`)
+- `PIXFORM_TRELLIS_TEXTURED=1` to enable textured GLB attempt (default is off)
+
 ---
 
 ## Project Structure
 
 ```text
 pixform/
-├── backend/
-│   ├── app.py            # FastAPI backend and model pipelines
-│   ├── outputs/          # generated results
-│   ├── uploads/          # uploaded source images
-│   ├── tsr/              # TripoSR runtime files
-│   ├── hy3dgen/          # Hunyuan3D runtime files
-│   └── trellis/          # TRELLIS runtime files (after CUDA install)
-├── frontend/
-│   └── index.html        # web interface
-├── install.ps1           # Windows installer
-├── install_mac.sh        # macOS installer
-├── PIXFORM.bat           # Windows launcher
-├── PIXFORM.sh            # macOS launcher
-├── pixform.iss           # Inno Setup script
-├── triposr_repo/         # cloned source during/after install
-├── hunyuan3d_repo/       # cloned source during/after install
-├── trellis_repo/         # cloned source during/after CUDA install
-└── README.md
+|-- backend/
+|   |-- app.py            # FastAPI backend and model pipelines
+|   |-- outputs/          # generated results
+|   |-- uploads/          # uploaded source images
+|   |-- tsr/              # TripoSR runtime files
+|   |-- hy3dgen/          # Hunyuan3D runtime files
+|   `-- trellis/          # TRELLIS runtime files (after CUDA install)
+|-- frontend/
+|   `-- index.html        # web interface
+|-- install.ps1           # Windows installer
+|-- install_mac.sh        # macOS installer
+|-- PIXFORM.bat           # Windows launcher
+|-- PIXFORM.sh            # macOS launcher
+|-- pixform.iss           # Inno Setup script
+|-- triposr_repo/         # cloned source during/after install
+|-- hunyuan3d_repo/       # cloned source during/after install
+|-- trellis_repo/         # cloned source during/after CUDA install
+`-- README.md
 ```
 
 ---
@@ -475,12 +486,12 @@ General process:
 
 ## Fixes in This Version
 
-- ✅ Fixed TRELLIS kaolin import with fallback for flexicubes
-- ✅ Improved install script with better error handling
-- ✅ Fixed app.py UTF-16 encoding issue
-- ✅ Better TRELLIS dependency validation
-- ✅ Clearer error messages in `/health` endpoint
-- ✅ Updated README with complete setup instructions
+- Fixed TRELLIS kaolin import with fallback for flexicubes
+- Improved install script with better error handling
+- Fixed app.py UTF-16 encoding issue
+- Better TRELLIS dependency validation
+- Clearer error messages in `/health` endpoint
+- Updated README with complete setup instructions
 
 ---
 

@@ -1,6 +1,6 @@
 """
 PIXFORM Backend
-Image to 3D pipeline ÔÇö TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
+Image to 3D pipeline - TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
 """
 import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json
 import xml.etree.ElementTree as ET
@@ -35,7 +35,7 @@ _hy3d_path = BASE_DIR / "hy3dgen"
 if _hy3d_path.exists() and str(_hy3d_path) not in sys.path:
     sys.path.insert(0, str(_hy3d_path))
 
-# ÔöÇÔöÇÔöÇ Global model state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Global model state
 
 models = {
     "triposr":   None,
@@ -141,7 +141,7 @@ def _resolve_installed_models() -> dict:
     if not MODEL_SELECTION_FILE.exists():
         return detected
     try:
-        data = json.loads(MODEL_SELECTION_FILE.read_text(encoding="utf-8"))
+        data = json.loads(MODEL_SELECTION_FILE.read_text(encoding="utf-8-sig"))
         if isinstance(data, dict):
             for name in detected:
                 if name in data:
@@ -253,7 +253,7 @@ def _model_unavailable_message(model_key: str, label: str) -> str:
     return f"{label} is not loaded. Check /health and setup."
 
 
-# ÔöÇÔöÇ Model loading ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Model loading
 
 def load_all_models():
     import torch
@@ -264,20 +264,20 @@ def load_all_models():
     models["installed_models"] = installed_models
     logger.info(f"Runtime device: {runtime_device}")
 
-    # rembg session (RMBG-1.4 ÔÇö best background removal quality)
+    # rembg session (RMBG-1.4 - best background removal quality)
     set_model_health("rembg", "loading")
     try:
         from rembg import new_session
         models["rembg_sess"] = new_session("isnet-general-use")
         set_model_health("rembg", "loaded")
-        logger.info("Ô£à rembg (ISNet) background remover loaded")
+        logger.info("rembg (ISNet) background remover loaded")
     except Exception as e:
         logger.warning(f"rembg failed: {e}")
         try:
             from rembg import new_session
             models["rembg_sess"] = new_session("u2net")
             set_model_health("rembg", "loaded")
-            logger.info("Ô£à rembg (u2net) background remover loaded")
+            logger.info("rembg (u2net) background remover loaded")
         except Exception as e2:
             set_model_health("rembg", "failed", str(e2))
             logger.warning(f"rembg fallback failed: {e2}")
@@ -289,7 +289,7 @@ def load_all_models():
     elif runtime_device == "mps":
         logger.info("Apple Metal (MPS) detected")
     else:
-        logger.warning("No GPU backend available ÔÇö running on CPU")
+        logger.warning("No GPU backend available - running on CPU")
 
     # TripoSR
     if not installed_models.get("triposr"):
@@ -308,7 +308,7 @@ def load_all_models():
             m.to(runtime_device)
             models["triposr"] = m
             set_model_health("triposr", "loaded")
-            logger.info(f"✅ TripoSR loaded on {runtime_device}")
+            logger.info(f"TripoSR loaded on {runtime_device}")
         except Exception as e:
             set_model_health("triposr", "failed", str(e))
             logger.warning(f"TripoSR failed to load: {e}")
@@ -348,7 +348,7 @@ def load_all_models():
             )
             models["hunyuan"] = pipe
             set_model_health("hunyuan", "loaded")
-            logger.info("✅ Hunyuan3D-2 loaded")
+            logger.info("Hunyuan3D-2 loaded")
         except Exception as e:
             set_model_health("hunyuan", "failed", str(e))
             logger.warning(f"Hunyuan3D-2 failed to load: {e}")
@@ -373,7 +373,7 @@ def load_all_models():
             pipe.cuda()
             models["trellis"] = pipe
             set_model_health("trellis", "loaded")
-            logger.info("✅ TRELLIS loaded")
+            logger.info("TRELLIS loaded")
         except ImportError as e:
             dep_name = str(e)
             if "spconv" in dep_name:
@@ -422,7 +422,7 @@ def load_all_models():
             pipe2.cuda()
             models["trellis2"] = pipe2
             set_model_health("trellis2", "loaded")
-            logger.info("✅ TRELLIS.2 loaded")
+            logger.info("TRELLIS.2 loaded")
         except ImportError as e:
             set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
             logger.warning(f"TRELLIS.2 failed to load: {e}")
@@ -442,11 +442,11 @@ app = FastAPI(title="PIXFORM", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ÔöÇÔöÇ Data models ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Data models
 
 class JobStatus(BaseModel):
     job_id:      str
-    status:      str            # queued | processing | done | error
+    status:      str            # queued | processing | cancelling | cancelled | done | error
     progress:    int = 0
     message:     str = ""
     model_used:  str = ""
@@ -457,13 +457,38 @@ class JobStatus(BaseModel):
     obj_url:     Optional[str] = None
     preview_url: Optional[str] = None
     poly_count:  Optional[int] = None
+    cancel_requested: Optional[bool] = None
 
 
-# ÔöÇÔöÇ Utilities ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Utilities
 
 def upd(job_id, **kw):
     if job_id in jobs:
         jobs[job_id].update(kw)
+
+
+def _job_terminal(status: str) -> bool:
+    return status in {"done", "error", "cancelled"}
+
+
+def _cancel_requested(job_id: str) -> bool:
+    j = jobs.get(job_id)
+    return bool(j and j.get("cancel_requested"))
+
+
+def _assert_not_cancelled(job_id: str):
+    if _cancel_requested(job_id):
+        raise RuntimeError("Job cancelled by user")
+
+
+def _resolve_timeout_seconds(env_name: str, default_seconds: int) -> Optional[int]:
+    raw = os.getenv(env_name, str(default_seconds)).strip()
+    try:
+        seconds = int(raw)
+    except Exception:
+        seconds = default_seconds
+    # 0 (or negative) disables timeout for users that prefer waiting indefinitely.
+    return None if seconds <= 0 else seconds
 
 
 def remove_background(img, job_id):
@@ -475,11 +500,45 @@ def remove_background(img, job_id):
     try:
         from rembg import remove as rembg_remove
         result = rembg_remove(img.convert("RGB"), session=sess)
-        upd(job_id, progress=20, message="Background removed Ô£ô")
+        upd(job_id, progress=20, message="Background removed")
         return result.convert("RGBA")
     except Exception as e:
         logger.warning(f"Background removal failed: {e}")
         return img.convert("RGBA")
+
+
+def _normalize_triposr_resolution(value: int) -> int:
+    """Snap requested resolution to the closest supported TripoSR extraction level."""
+    try:
+        v = int(value)
+    except Exception:
+        return 512
+    v = max(128, min(1024, v))
+    return min(TRIPOSR_RES_LEVELS, key=lambda x: abs(x - v))
+
+
+def _fast_finalize_mesh(mesh, target_profile: Optional[dict] = None):
+    """Fast fallback mesh finalize path used when heavy postprocess times out."""
+    import trimesh
+
+    try:
+        trimesh.repair.fix_normals(mesh)
+        trimesh.repair.fix_winding(mesh)
+        mesh.update_faces(mesh.nondegenerate_faces())
+        mesh.update_faces(mesh.unique_faces())
+        mesh.remove_unreferenced_vertices()
+        trimesh.repair.fill_holes(mesh)
+    except Exception:
+        pass
+
+    mesh = _apply_input_aspect_correction(mesh, target_profile)
+
+    bounds = mesh.bounds
+    size = max(bounds[1] - bounds[0])
+    if size > 0:
+        mesh.apply_scale(100.0 / size)
+
+    return mesh
 
 
 def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[dict] = None):
@@ -494,6 +553,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     smooth_iters   = {"none": 0, "light": 5,  "standard": 15, "heavy": 25}.get(level, 15)
     poisson_depth  = {"none": 9, "light": 10, "standard": 11, "heavy": 12}.get(level, 11)
     poisson_points = {"none": 60000, "light": 100000, "standard": 200000, "heavy": 350000}.get(level, 200000)
+    use_poisson = level in {"standard", "heavy"}
 
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
@@ -503,8 +563,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     if components:
         mesh = max(components, key=lambda c: len(c.faces))
 
-    # ÔöÇÔöÇ 2. Basic repair ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-
+    # ÔöÇÔöÇ 2. Basic repair ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     trimesh.repair.fix_normals(mesh)
     trimesh.repair.fix_winding(mesh)
     try:
@@ -514,8 +573,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     except Exception:
         pass
 
-    # ÔöÇÔöÇ 3. Smoothing ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-
+    # ÔöÇÔöÇ 3. Smoothing ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     if smooth_iters > 0:
         upd(job_id, progress=89, message="Smoothing mesh...")
         try:
@@ -526,41 +584,44 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
             except Exception:
                 pass
 
-    # ÔöÇÔöÇ 4. Poisson reconstruction ÔåÆ mathematically watertight surface ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-    upd(job_id, progress=91, message="Poisson reconstruction (watertight)...")
-    try:
-        import open3d as o3d
+    # Use Poisson only for standard/heavy to keep draft/low presets responsive.
+    if use_poisson:
+        upd(job_id, progress=91, message="Poisson reconstruction (watertight)...")
+        try:
+            import open3d as o3d
 
-        o3d_mesh = o3d.geometry.TriangleMesh()
-        o3d_mesh.vertices  = o3d.utility.Vector3dVector(mesh.vertices)
-        o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
-        o3d_mesh.compute_vertex_normals()
+            o3d_mesh = o3d.geometry.TriangleMesh()
+            o3d_mesh.vertices  = o3d.utility.Vector3dVector(mesh.vertices)
+            o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
+            o3d_mesh.compute_vertex_normals()
 
-        pcd = o3d_mesh.sample_points_poisson_disk(number_of_points=poisson_points)
-        pcd.estimate_normals()
-        pcd.orient_normals_consistent_tangent_plane(30)
+            pcd = o3d_mesh.sample_points_poisson_disk(number_of_points=poisson_points)
+            pcd.estimate_normals()
+            pcd.orient_normals_consistent_tangent_plane(30)
 
-        poisson_mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-            pcd, depth=poisson_depth, width=0, scale=1.1, linear_fit=False
-        )
+            poisson_mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                pcd, depth=poisson_depth, width=0, scale=1.1, linear_fit=False
+            )
 
-        # Trim low-density outlier surface fragments based on quality level
-        density_trim_pct = {"none": 1, "light": 3, "standard": 5, "heavy": 8}.get(level, 5)
-        dens   = _np.asarray(densities)
-        thresh = _np.percentile(dens, density_trim_pct)
-        poisson_mesh.remove_vertices_by_mask(dens < thresh)
-        poisson_mesh.compute_vertex_normals()
+            # Trim low-density outlier surface fragments based on quality level
+            density_trim_pct = {"none": 1, "light": 3, "standard": 5, "heavy": 8}.get(level, 5)
+            dens   = _np.asarray(densities)
+            thresh = _np.percentile(dens, density_trim_pct)
+            poisson_mesh.remove_vertices_by_mask(dens < thresh)
+            poisson_mesh.compute_vertex_normals()
 
-        v = _np.asarray(poisson_mesh.vertices)
-        f = _np.asarray(poisson_mesh.triangles)
-        if len(v) > 100 and len(f) > 100:
-            candidate = trimesh.Trimesh(vertices=v, faces=f, process=True)
-            if len(candidate.faces) > 100:
-                mesh = candidate
-                logger.info(f"Poisson OK: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
+            v = _np.asarray(poisson_mesh.vertices)
+            f = _np.asarray(poisson_mesh.triangles)
+            if len(v) > 100 and len(f) > 100:
+                candidate = trimesh.Trimesh(vertices=v, faces=f, process=True)
+                if len(candidate.faces) > 100:
+                    mesh = candidate
+                    logger.info(f"Poisson OK: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
 
-    except Exception as e:
-        logger.warning(f"Poisson failed: {e} ÔÇö continuing with trimesh repair")
+        except Exception as e:
+            logger.warning(f"Poisson failed: {e} - continuing with trimesh repair")
+    else:
+        upd(job_id, progress=91, message="Skipping Poisson for fast preset...")
 
     # ÔöÇÔöÇ 5. Hole filling ÔÇö multiple passes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     upd(job_id, progress=94, message="Filling holes...")
@@ -584,8 +645,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
         except Exception as e:
             logger.warning(f"Voxel remesh failed: {e}")
 
-    # ÔöÇÔöÇ 7. Final cleanup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-
+    # ÔöÇÔöÇ 7. Final cleanup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     try:
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh.update_faces(mesh.unique_faces())
@@ -597,7 +657,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     # ÔöÇÔöÇ 8. Match final proportions to the input image silhouette ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     mesh = _apply_input_aspect_correction(mesh, target_profile)
 
-    # ÔöÇÔöÇ 9. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ 9. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     bounds = mesh.bounds
     size = max(bounds[1] - bounds[0])
     if size > 0:
@@ -620,16 +680,6 @@ def to_trimesh(raw):
             faces=raw.faces_packed().cpu().numpy()
         )
     return trimesh.Trimesh(vertices=raw.vertices, faces=raw.faces)
-
-
-def _normalize_triposr_resolution(value: int) -> int:
-    """Snap requested resolution to the closest supported TripoSR extraction level."""
-    try:
-        v = int(value)
-    except Exception:
-        return 512
-    v = max(128, min(1024, v))
-    return min(TRIPOSR_RES_LEVELS, key=lambda x: abs(x - v))
 
 
 def export_all(mesh, out_dir: Path, job_id: str):
@@ -780,7 +830,7 @@ def render_preview(mesh, path: Path):
         pass
 
 
-# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -792,12 +842,14 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, status="processing", progress=5, message="Loading image...")
 
         img = Image.open(image_path).convert("RGBA")
+        _assert_not_cancelled(job_id)
 
         # Background removal
         if settings.get("remove_bg", True):
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+            _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
@@ -826,6 +878,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
                 return models["triposr"]([img], device=runtime_device)
 
         scene_codes = await loop.run_in_executor(None, infer)
+        _assert_not_cancelled(job_id)
 
         # Mesh extraction ÔÇö try highest resolution that fits in VRAM
         target_res = settings.get("resolution", 512)
@@ -849,8 +902,9 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             raise RuntimeError("All resolutions failed")
 
         raw, used_res = await loop.run_in_executor(None, extract)
+        _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=75, message=f"Mesh extracted at {used_res} Ô£ô")
+        upd(job_id, progress=75, message=f"Mesh extracted at {used_res}")
 
         # Post-processing
         mesh = to_trimesh(raw)
@@ -860,27 +914,32 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         loop = asyncio.get_event_loop()
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
+        _assert_not_cancelled(job_id)
 
         # Export
         upd(job_id, progress=95, message="Exporting files...")
         export_all(mesh, out_dir, job_id)
         render_preview(mesh, out_dir / "preview.png")
+        _assert_not_cancelled(job_id)
 
         elapsed = round(time.time() - t_start, 1)
         upd(job_id,
             status="done", progress=100,
-            message=f"Done in {elapsed}s ÔÇö {len(mesh.faces):,} polygons",
+            message=f"Done in {elapsed}s - {len(mesh.faces):,} polygons",
             model_used=f"TripoSR (res {used_res})",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
         )
 
     except Exception as e:
+        if str(e) == "Job cancelled by user":
+            upd(job_id, status="cancelled", message="Cancelled by user")
+            return
         logger.error(f"TripoSR error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
 
 
-# ÔöÇÔöÇ Hunyuan3D-2 pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ Hunyuan3D-2 pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -891,12 +950,14 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, status="processing", progress=5, message="Loading image...")
 
         img = Image.open(image_path).convert("RGBA")
+        _assert_not_cancelled(job_id)
 
         # Background removal
         if settings.get("remove_bg", True):
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+            _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
@@ -937,8 +998,9 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         upd(job_id, progress=30, message="Running Hunyuan3D-2 diffusion model...")
         raw_mesh = await loop.run_in_executor(None, infer)
+        _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="Mesh generated Ô£ô")
+        upd(job_id, progress=78, message="Mesh generated")
 
         # Post-processing
         mesh = to_trimesh(raw_mesh)
@@ -947,27 +1009,32 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
+        _assert_not_cancelled(job_id)
 
         # Export
         upd(job_id, progress=95, message="Exporting files...")
         export_all(mesh, out_dir, job_id)
         render_preview(mesh, out_dir / "preview.png")
+        _assert_not_cancelled(job_id)
 
         elapsed = round(time.time() - t_start, 1)
         upd(job_id,
             status="done", progress=100,
-            message=f"Done in {elapsed}s ÔÇö {len(mesh.faces):,} polygons",
+            message=f"Done in {elapsed}s - {len(mesh.faces):,} polygons",
             model_used="Hunyuan3D-2",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
         )
 
     except Exception as e:
+        if str(e) == "Job cancelled by user":
+            upd(job_id, status="cancelled", message="Cancelled by user")
+            return
         logger.error(f"Hunyuan3D-2 error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
 
 
-# ÔöÇÔöÇ TRELLIS pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ TRELLIS pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -978,21 +1045,22 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         upd(job_id, status="processing", progress=5, message="Loading image...")
 
         img = Image.open(image_path).convert("RGBA")
+        _assert_not_cancelled(job_id)
 
         # Background removal (our rembg session; TRELLIS will skip its own if RGBA alpha is set)
         if settings.get("remove_bg", True):
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+            _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
         upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...")
-        upd(job_id, progress=25, message="This takes 5 TO 10 minutes, please wait...")
+        upd(job_id, progress=25, message="This takes 5 to 10 minutes, please wait...")
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
-        # TRELLIS uses separate step counts: sparse structure (coarser) and SLAT (finer)
         ss_steps   = max(12, min(50, steps // 3))
         slat_steps = max(12, min(50, steps))
 
@@ -1010,11 +1078,13 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         upd(job_id, progress=30, message="Running TRELLIS diffusion model...")
         outputs = await loop.run_in_executor(None, infer)
+        _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="3D structure generated Ô£ô")
+        upd(job_id, progress=78, message="3D structure generated")
 
-        # ÔöÇÔöÇ Textured GLB export (requires nvdiffrast + mip-splatting) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
         glb_textured = False
+        textured_enabled = str(os.getenv("PIXFORM_TRELLIS_TEXTURED", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        texture_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS_TEXTURE_TIMEOUT_SEC", 480)
 
         def make_textured_glb():
             try:
@@ -1031,9 +1101,18 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
                 logger.warning(f"TRELLIS textured GLB failed (nvdiffrast/mip-splatting may not be installed): {e}")
                 return False
 
-        glb_textured = await loop.run_in_executor(None, make_textured_glb)
+        if textured_enabled:
+            upd(job_id, progress=79, message="Generating textured GLB (optional)...")
+            try:
+                tex_task = loop.run_in_executor(None, make_textured_glb)
+                glb_textured = await asyncio.wait_for(tex_task, timeout=texture_timeout) if texture_timeout else await tex_task
+            except asyncio.TimeoutError:
+                logger.warning("TRELLIS textured GLB stage timed out; falling back to plain GLB")
+                glb_textured = False
+        else:
+            logger.info("TRELLIS textured GLB disabled by default (set PIXFORM_TRELLIS_TEXTURED=1 to enable)")
+        _assert_not_cancelled(job_id)
 
-        # ÔöÇÔöÇ Extract trimesh for STL / 3MF / OBJ (and plain GLB fallback) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
         def extract_trimesh():
             import trimesh as _trimesh
             m = outputs["mesh"][0]
@@ -1044,15 +1123,23 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             )
 
         raw_mesh = await loop.run_in_executor(None, extract_trimesh)
+        _assert_not_cancelled(job_id)
 
         if len(raw_mesh.faces) == 0:
             raise RuntimeError("TRELLIS produced an empty mesh")
 
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
-        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
-
-        # ÔöÇÔöÇ Export ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+        post_default = {"none": 600, "light": 900, "standard": 1800, "heavy": 2700}.get(post_level, 1800)
+        post_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS_POST_TIMEOUT_SEC", post_default)
+        try:
+            post_task = loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
+            mesh = await asyncio.wait_for(post_task, timeout=post_timeout) if post_timeout else await post_task
+        except asyncio.TimeoutError:
+            logger.warning(f"TRELLIS postprocess timed out after {post_timeout}s; using fast fallback mesh finalize")
+            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...")
+            mesh = _fast_finalize_mesh(raw_mesh.copy(), input_profile)
+        _assert_not_cancelled(job_id)
 
         upd(job_id, progress=95, message="Exporting files...")
 
@@ -1093,18 +1180,22 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         )
 
         render_preview(mesh, out_dir / "preview.png")
+        _assert_not_cancelled(job_id)
 
         elapsed = round(time.time() - t_start, 1)
         glb_note = " (textured)" if glb_textured else ""
         upd(job_id,
             status="done", progress=100,
-            message=f"Done in {elapsed}s ÔÇö {len(mesh.faces):,} polygons{glb_note}",
+            message=f"Done in {elapsed}s - {len(mesh.faces):,} polygons{glb_note}",
             model_used="TRELLIS",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
         )
 
     except Exception as e:
+        if str(e) == "Job cancelled by user":
+            upd(job_id, status="cancelled", message="Cancelled by user")
+            return
         logger.error(f"TRELLIS error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
 
@@ -1120,17 +1211,19 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         upd(job_id, status="processing", progress=5, message="Loading image...")
 
         img = Image.open(image_path).convert("RGBA")
+        _assert_not_cancelled(job_id)
 
-        # Background removal (trellis2 honours RGBA alpha – no double-processing)
+        # Background removal (trellis2 honours RGBA alpha - no double-processing)
         if settings.get("remove_bg", True):
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+            _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
         upd(job_id, progress=22, message="Generating 3D shape with TRELLIS.2...")
-        upd(job_id, progress=25, message="This takes 6–12 minutes, please wait...")
+        upd(job_id, progress=25, message="This takes 6 to 12 minutes, please wait...")
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
@@ -1147,8 +1240,9 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
 
         upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...")
         outputs = await loop.run_in_executor(None, infer)
+        _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="3D structure generated ✔")
+        upd(job_id, progress=78, message="3D structure generated")
 
         # outputs is List[MeshWithVoxel]; take first sample
         m = outputs[0]
@@ -1179,6 +1273,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
                 return False
 
         glb_textured = await loop.run_in_executor(None, make_textured_glb)
+        _assert_not_cancelled(job_id)
 
         # ── Extract trimesh for STL / 3MF / OBJ (and plain GLB fallback) ─────
         def extract_trimesh():
@@ -1190,6 +1285,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             )
 
         raw_mesh = await loop.run_in_executor(None, extract_trimesh)
+        _assert_not_cancelled(job_id)
 
         if len(raw_mesh.faces) == 0:
             raise RuntimeError("TRELLIS.2 produced an empty mesh")
@@ -1197,6 +1293,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
+        _assert_not_cancelled(job_id)
 
         # ── Export ─────────────────────────────────────────────────────────────
         upd(job_id, progress=95, message="Exporting files...")
@@ -1237,23 +1334,27 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         )
 
         render_preview(mesh, out_dir / "preview.png")
+        _assert_not_cancelled(job_id)
 
         elapsed = round(time.time() - t_start, 1)
         glb_note = " (textured)" if glb_textured else ""
         upd(job_id,
             status="done", progress=100,
-            message=f"Done in {elapsed}s — {len(mesh.faces):,} polygons{glb_note}",
+            message=f"Done in {elapsed}s - {len(mesh.faces):,} polygons{glb_note}",
             model_used="TRELLIS.2",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
         )
 
     except Exception as e:
+        if str(e) == "Job cancelled by user":
+            upd(job_id, status="cancelled", message="Cancelled by user")
+            return
         logger.error(f"TRELLIS.2 error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
 
 
-# ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     import trimesh
@@ -1264,12 +1365,12 @@ async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict)
     export_all(mesh, out_dir, job_id)
     render_preview(mesh, out_dir / "preview.png")
     upd(job_id, status="done", progress=100,
-        message="Demo mode ÔÇö no GPU available",
+        message="Demo mode - no GPU available",
         model_used="Demo",
         preview_url=f"/outputs/{job_id}/preview.png")
 
 
-# ÔöÇÔöÇ Routes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ Routes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 @app.get("/health")
 async def health():
@@ -1368,6 +1469,7 @@ async def convert(
         time_taken=None,
         stl_url=None, tmf_url=None, glb_url=None, obj_url=None,
         preview_url=None, poly_count=None,
+        cancel_requested=False,
     )
 
     out_dir = OUTPUT_DIR / job_id
@@ -1384,8 +1486,31 @@ async def get_status(job_id: str):
     return JobStatus(**jobs[job_id])
 
 
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
+
+    job = jobs[job_id]
+    if _job_terminal(job.get("status", "")):
+        return {"job_id": job_id, "status": job.get("status"), "cancel_requested": False}
+
+    job["cancel_requested"] = True
+    if job.get("status") in {"queued", "processing"}:
+        job["status"] = "cancelling"
+        job["message"] = "Cancel requested, waiting for safe stop..."
+
+    return {"job_id": job_id, "status": job.get("status"), "cancel_requested": True}
+
+
 @app.delete("/jobs/{job_id}")
 async def delete_job(job_id: str):
+    if job_id in jobs and not _job_terminal(jobs[job_id].get("status", "")):
+        jobs[job_id]["cancel_requested"] = True
+        jobs[job_id]["status"] = "cancelling"
+        jobs[job_id]["message"] = "Cancel requested, waiting for safe stop..."
+        return {"job_id": job_id, "status": "cancelling", "deleted": False}
+
     jobs.pop(job_id, None)
     shutil.rmtree(OUTPUT_DIR / job_id, ignore_errors=True)
     return {"deleted": job_id}

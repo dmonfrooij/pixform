@@ -801,7 +801,8 @@ $selectedModelConfig = [ordered]@{}
 foreach ($name in $AllModelKeys) {
     $selectedModelConfig[$name] = [bool]$SelectedModels[$name]
 }
-$selectedModelConfig | ConvertTo-Json | Set-Content -LiteralPath $modelsConfigPath -Encoding UTF8
+$modelJson = $selectedModelConfig | ConvertTo-Json
+[System.IO.File]::WriteAllText($modelsConfigPath, $modelJson, (New-Object System.Text.UTF8Encoding($false)))
 OK "Saved model selection to .pixform_models.json"
 
 # ── Validate ───────────────────────────────────────────────────────────────────
@@ -814,7 +815,7 @@ cfg_path = pathlib.Path('.pixform_models.json')
 selected = {k: True for k in ('triposr', 'hunyuan', 'trellis', 'trellis2')}
 if cfg_path.exists():
     try:
-        data = json.loads(cfg_path.read_text(encoding='utf-8'))
+        data = json.loads(cfg_path.read_text(encoding='utf-8-sig'))
         if isinstance(data, dict):
             for key in selected:
                 if key in data:
