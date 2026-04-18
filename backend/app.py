@@ -359,9 +359,19 @@ def load_all_models():
     else:
         try:
             set_model_health("trellis", "loading")
-            os.environ.setdefault("SPCONV_ALGO", "native")
+            # auto is typically faster after a short one-time benchmark; allow override for debugging.
+            spconv_algo = os.getenv("PIXFORM_SPCONV_ALGO", "auto").strip().lower()
+            if spconv_algo not in {"auto", "native"}:
+                spconv_algo = "auto"
+            os.environ["SPCONV_ALGO"] = spconv_algo
             os.environ.setdefault("ATTN_BACKEND", "xformers")
             os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
+            logger.info(
+                "TRELLIS backends: SPCONV_ALGO=%s, ATTN_BACKEND=%s, SPARSE_ATTN_BACKEND=%s",
+                os.environ.get("SPCONV_ALGO"),
+                os.environ.get("ATTN_BACKEND"),
+                os.environ.get("SPARSE_ATTN_BACKEND"),
+            )
 
             # Pre-check dependencies
             import spconv
@@ -1082,7 +1092,29 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             return outputs
 
         upd(job_id, progress=30, message="Running TRELLIS diffusion model...", stage="inference")
-        outputs = await loop.run_in_executor(None, infer)
+        infer_started = time.time()
+        infer_future = loop.run_in_executor(None, infer)
+        # TRELLIS inference runs in a blocking executor call; emit a heartbeat so UI users can see it's alive.
+        while not infer_future.done():
+            await asyncio.sleep(8)
+            elapsed_inf = int(time.time() - infer_started)
+            if _cancel_requested(job_id):
+                upd(
+                    job_id,
+                    progress=30,
+                    message=f"Cancel requested; waiting for a safe stop... ({elapsed_inf}s elapsed)",
+                    stage="inference",
+                )
+            else:
+                # Slow ramp during inference to avoid a frozen-looking status page on long runs.
+                heartbeat_progress = min(75, 30 + elapsed_inf // 20)
+                upd(
+                    job_id,
+                    progress=int(heartbeat_progress),
+                    message=f"Running TRELLIS diffusion model... {elapsed_inf}s elapsed",
+                    stage="inference",
+                )
+        outputs = await infer_future
         _assert_not_cancelled(job_id)
 
         upd(job_id, progress=78, message="3D structure generated", stage="mesh_ready")
