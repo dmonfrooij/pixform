@@ -2,7 +2,7 @@
 PIXFORM Backend
 Image to 3D pipeline - TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
 """
-import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json
+import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json, gc
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
@@ -26,6 +26,7 @@ BASE_DIR   = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads";  UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = BASE_DIR / "outputs";  OUTPUT_DIR.mkdir(exist_ok=True)
 MODEL_SELECTION_FILE = BASE_DIR.parent / ".pixform_models.json"
+MODEL_KEYS = ("triposr", "hunyuan", "trellis", "trellis2")
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -44,6 +45,7 @@ models = {
     "trellis2":  None,
     "rembg_sess": None,
     "installed_models": {},
+    "active_models": {},
     "runtime_device": "cpu",
 }
 model_health = {
@@ -110,6 +112,14 @@ def set_model_health(name: str, status: str, error: Optional[str] = None):
         model_health[name]["error"] = error
 
 
+def _resolve_cleanup_seconds(env_name: str, default_seconds: int) -> int:
+    try:
+        value = int(str(os.getenv(env_name, default_seconds)).strip())
+    except Exception:
+        value = default_seconds
+    return max(5, value)
+
+
 def _format_model_load_error(model_name: str, exc: Exception) -> str:
     """Return concise, actionable load errors for UI health cards."""
     raw = str(exc)
@@ -149,6 +159,46 @@ def _resolve_installed_models() -> dict:
     except Exception as e:
         logger.warning(f"Could not read model selection file {MODEL_SELECTION_FILE}: {e}")
     return detected
+
+
+def _resolve_active_models(installed_models: dict) -> dict:
+    active = {name: bool(installed_models.get(name, False)) for name in MODEL_KEYS}
+    raw = os.getenv("PIXFORM_ACTIVE_MODELS", "").strip().lower()
+    if not raw or raw in {"all", "installed", "*", "a"}:
+        return active
+
+    aliases = {
+        "1": "triposr",
+        "2": "hunyuan",
+        "3": "trellis",
+        "4": "trellis2",
+        "triposr": "triposr",
+        "hunyuan": "hunyuan",
+        "hunyuan3d": "hunyuan",
+        "hunyuan3d-2": "hunyuan",
+        "trellis": "trellis",
+        "trellis2": "trellis2",
+        "trellis.2": "trellis2",
+    }
+    selected = set()
+    unknown = []
+    for part in raw.replace(";", ",").split(","):
+        token = part.strip().lower()
+        if not token:
+            continue
+        model_name = aliases.get(token)
+        if model_name:
+            selected.add(model_name)
+        else:
+            unknown.append(token)
+
+    if unknown:
+        logger.warning(f"Ignoring unknown PIXFORM_ACTIVE_MODELS entries: {', '.join(unknown)}")
+    if not selected:
+        logger.warning("PIXFORM_ACTIVE_MODELS resolved to no known models; falling back to all installed models")
+        return active
+
+    return {name: bool(installed_models.get(name, False)) and name in selected for name in MODEL_KEYS}
 
 
 def _foreground_profile(img) -> dict:
@@ -246,6 +296,8 @@ def _model_unavailable_message(model_key: str, label: str) -> str:
     detail = model_health[model_key]["error"]
     if status == "not_installed":
         return f"{label} is not installed. Re-run install.ps1 and include {label}."
+    if status == "inactive":
+        return f"{label} is installed but inactive for this session. Restart PIXFORM and choose {label} as the active model."
     if status == "skipped" and detail:
         return f"{label} is unavailable on this runtime: {detail}."
     if detail:
@@ -261,8 +313,14 @@ def load_all_models():
     runtime_device = resolve_runtime_device()
     models["runtime_device"] = runtime_device
     installed_models = _resolve_installed_models()
+    active_models = _resolve_active_models(installed_models)
     models["installed_models"] = installed_models
+    models["active_models"] = active_models
     logger.info(f"Runtime device: {runtime_device}")
+    logger.info(
+        "Active models this session: %s",
+        ", ".join([name for name in MODEL_KEYS if active_models.get(name)]) or "none",
+    )
 
     # rembg session (RMBG-1.4 - best background removal quality)
     set_model_health("rembg", "loading")
@@ -294,6 +352,8 @@ def load_all_models():
     # TripoSR
     if not installed_models.get("triposr"):
         set_model_health("triposr", "not_installed", "Not installed by installer selection")
+    elif not active_models.get("triposr"):
+        set_model_health("triposr", "inactive", "Disabled at startup by active model selection")
     else:
         set_model_health("triposr", "loading")
         try:
@@ -317,14 +377,20 @@ def load_all_models():
     if runtime_device != "cuda":
         if not installed_models.get("hunyuan"):
             set_model_health("hunyuan", "not_installed", "Not installed by installer selection")
+        elif not active_models.get("hunyuan"):
+            set_model_health("hunyuan", "inactive", "Disabled at startup by active model selection")
         else:
             set_model_health("hunyuan", "skipped", "CUDA/NVIDIA required")
         if not installed_models.get("trellis"):
             set_model_health("trellis", "not_installed", "Not installed by installer selection")
+        elif not active_models.get("trellis"):
+            set_model_health("trellis", "inactive", "Disabled at startup by active model selection")
         else:
             set_model_health("trellis", "skipped", "CUDA/NVIDIA required")
         if not installed_models.get("trellis2"):
             set_model_health("trellis2", "not_installed", "Not installed by installer selection")
+        elif not active_models.get("trellis2"):
+            set_model_health("trellis2", "inactive", "Disabled at startup by active model selection")
         else:
             set_model_health("trellis2", "skipped", "CUDA/NVIDIA required")
         logger.warning("Hunyuan3D-2 skipped: currently supported only on CUDA/NVIDIA")
@@ -332,6 +398,8 @@ def load_all_models():
 
     if not installed_models.get("hunyuan"):
         set_model_health("hunyuan", "not_installed", "Not installed by installer selection")
+    elif not active_models.get("hunyuan"):
+        set_model_health("hunyuan", "inactive", "Disabled at startup by active model selection")
     else:
         try:
             set_model_health("hunyuan", "loading")
@@ -356,6 +424,8 @@ def load_all_models():
     # TRELLIS (CUDA-only, 12+ GB VRAM recommended)
     if not installed_models.get("trellis"):
         set_model_health("trellis", "not_installed", "Not installed by installer selection")
+    elif not active_models.get("trellis"):
+        set_model_health("trellis", "inactive", "Disabled at startup by active model selection")
     else:
         try:
             set_model_health("trellis", "loading")
@@ -409,6 +479,8 @@ def load_all_models():
     # TRELLIS.2 (CUDA-only, requires cumesh + flex_gemm + o_voxel + spconv)
     if not installed_models.get("trellis2"):
         set_model_health("trellis2", "not_installed", "Not installed by installer selection")
+    elif not active_models.get("trellis2"):
+        set_model_health("trellis2", "inactive", "Disabled at startup by active model selection")
     else:
         try:
             import importlib as _il
@@ -445,7 +517,17 @@ def load_all_models():
 async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, load_all_models)
-    yield
+    cleanup_stop = asyncio.Event()
+    cleanup_task = asyncio.create_task(_job_cleanup_loop(cleanup_stop))
+    try:
+        yield
+    finally:
+        cleanup_stop.set()
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="PIXFORM", version="1.0.0", lifespan=lifespan)
@@ -477,6 +559,12 @@ class JobStatus(BaseModel):
 def upd(job_id, **kw):
     if job_id in jobs:
         kw.setdefault("last_update_ts", time.time())
+        if "status" in kw and _job_terminal(str(kw["status"])):
+            kw.setdefault("completed_at", time.time())
+            kw.setdefault(
+                "cleanup_after_ts",
+                time.time() + _resolve_cleanup_seconds("PIXFORM_JOB_RETENTION_SEC", 3600),
+            )
         jobs[job_id].update(kw)
 
 
@@ -502,6 +590,116 @@ def _resolve_timeout_seconds(env_name: str, default_seconds: int) -> Optional[in
         seconds = default_seconds
     # 0 (or negative) disables timeout for users that prefer waiting indefinitely.
     return None if seconds <= 0 else seconds
+
+
+def _safe_unlink(path_like) -> bool:
+    try:
+        path = Path(path_like)
+        if path.exists():
+            path.unlink()
+            return True
+    except Exception as e:
+        logger.warning(f"Cleanup unlink failed for {path_like}: {e}")
+    return False
+
+
+def _safe_rmtree(path_like) -> bool:
+    try:
+        path = Path(path_like)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=False)
+            return True
+    except Exception as e:
+        logger.warning(f"Cleanup rmtree failed for {path_like}: {e}")
+    return False
+
+
+def _release_runtime_memory():
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _cleanup_job_artifacts(job: dict, remove_upload: bool = True, remove_output: bool = True) -> dict:
+    removed = {"upload": False, "output": False}
+    if remove_upload:
+        upload_path = job.get("upload_path")
+        if upload_path:
+            removed["upload"] = _safe_unlink(upload_path)
+    if remove_output:
+        output_dir = job.get("output_dir")
+        if output_dir:
+            removed["output"] = _safe_rmtree(output_dir)
+    return removed
+
+
+def _finalize_job_resources(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        _release_runtime_memory()
+        return
+
+    # Uploads are only needed until preprocessing/inference starts; keep outputs until manual or timed cleanup.
+    if not job.get("upload_deleted"):
+        job["upload_deleted"] = _safe_unlink(job.get("upload_path")) if job.get("upload_path") else True
+
+    if job.get("delete_requested") and _job_terminal(str(job.get("status", ""))):
+        _cleanup_job_artifacts(job, remove_upload=not job.get("upload_deleted"), remove_output=True)
+        jobs.pop(job_id, None)
+
+    _release_runtime_memory()
+
+
+def _prune_old_jobs(force_terminal_cleanup: bool = False) -> dict:
+    now = time.time()
+    removed_jobs = 0
+    removed_outputs = 0
+    removed_uploads = 0
+    for job_id, job in list(jobs.items()):
+        status = str(job.get("status", ""))
+        if not _job_terminal(status):
+            continue
+
+        cleanup_after_ts = float(job.get("cleanup_after_ts") or 0.0)
+        should_remove = force_terminal_cleanup or bool(job.get("delete_requested")) or (cleanup_after_ts and now >= cleanup_after_ts)
+        if not should_remove:
+            continue
+
+        removed = _cleanup_job_artifacts(job, remove_upload=not job.get("upload_deleted"), remove_output=True)
+        removed_uploads += int(bool(removed.get("upload")))
+        removed_outputs += int(bool(removed.get("output")))
+        jobs.pop(job_id, None)
+        removed_jobs += 1
+
+    if removed_jobs:
+        logger.info(
+            "Cleaned up %s old job(s) (uploads=%s, outputs=%s)",
+            removed_jobs,
+            removed_uploads,
+            removed_outputs,
+        )
+    return {"jobs": removed_jobs, "uploads": removed_uploads, "outputs": removed_outputs}
+
+
+async def _job_cleanup_loop(stop_event: asyncio.Event):
+    interval = _resolve_cleanup_seconds("PIXFORM_CLEANUP_INTERVAL_SEC", 120)
+    while not stop_event.is_set():
+        try:
+            _prune_old_jobs()
+        except Exception as e:
+            logger.warning(f"Background cleanup loop failed: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
 
 
 def remove_background(img, job_id):
@@ -843,7 +1041,7 @@ def render_preview(mesh, path: Path):
         pass
 
 
-# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -874,7 +1072,6 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             a = img_np[:, :, 3:4]
             img_np = img_np[:, :, :3] * a + 0.5 * (1.0 - a)
         img = Image.fromarray((img_np * 255.0).astype(np.uint8))
-        # Enhance contrast and sharpness so the model sees clearer edges and detail
         from PIL import ImageEnhance
         img = ImageEnhance.Contrast(img).enhance(1.35)
         img = ImageEnhance.Sharpness(img).enhance(1.4)
@@ -893,7 +1090,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         scene_codes = await loop.run_in_executor(None, infer)
         _assert_not_cancelled(job_id)
 
-        # Mesh extraction ÔÇö try highest resolution that fits in VRAM
+        # Mesh extraction — try highest resolution that fits in VRAM
         target_res = settings.get("resolution", 512)
         fallbacks = [r for r in TRIPOSR_RES_LEVELS if r <= target_res]
         if not fallbacks:
@@ -919,17 +1116,14 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         upd(job_id, progress=75, message=f"Mesh extracted at {used_res}", stage="mesh_ready")
 
-        # Post-processing
         mesh = to_trimesh(raw)
         if len(mesh.faces) == 0:
             raise RuntimeError("TripoSR produced an empty mesh")
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
-        loop = asyncio.get_event_loop()
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
         _assert_not_cancelled(job_id)
 
-        # Export
         upd(job_id, progress=95, message="Exporting files...", stage="export")
         export_all(mesh, out_dir, job_id)
         render_preview(mesh, out_dir / "preview.png")
@@ -951,6 +1145,8 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             return
         logger.error(f"TripoSR error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
+    finally:
+        _finalize_job_resources(job_id)
 
 
 # ÔöÇÔöÇ Hunyuan3D-2 pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -1047,6 +1243,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             return
         logger.error(f"Hunyuan3D-2 error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
+    finally:
+        _finalize_job_resources(job_id)
 
 
 # ÔöÇÔöÇ TRELLIS pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -1260,6 +1458,8 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             return
         logger.error(f"TRELLIS error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
+    finally:
+        _finalize_job_resources(job_id)
 
 
 # ── TRELLIS.2 pipeline ───────────────────────────────────────────────────────
@@ -1415,6 +1615,8 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             return
         logger.error(f"TRELLIS.2 error: {e}", exc_info=True)
         upd(job_id, status="error", message=str(e))
+    finally:
+        _finalize_job_resources(job_id)
 
 
 # ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -1451,6 +1653,11 @@ async def health():
         "hunyuan_installed": models.get("installed_models", {}).get("hunyuan", False),
         "trellis_installed": models.get("installed_models", {}).get("trellis", False),
         "trellis2_installed": models.get("installed_models", {}).get("trellis2", False),
+        "triposr_active": models.get("active_models", {}).get("triposr", False),
+        "hunyuan_active": models.get("active_models", {}).get("hunyuan", False),
+        "trellis_active": models.get("active_models", {}).get("trellis", False),
+        "trellis2_active": models.get("active_models", {}).get("trellis2", False),
+        "active_models": [name for name in MODEL_KEYS if models.get("active_models", {}).get(name, False)],
         "rembg":      models["rembg_sess"] is not None,
         "cuda":       torch.cuda.is_available(),
         "mps":        mps_ok,
@@ -1505,21 +1712,25 @@ async def convert(
     # Determine which model to use
     if model == "triposr":
         if models["triposr"] is None:
+            _safe_unlink(img_path)
             raise HTTPException(503, _model_unavailable_message("triposr", "TripoSR"))
         run_fn = run_triposr
         model_label = "TripoSR"
     elif model == "hunyuan":
         if models["hunyuan"] is None:
+            _safe_unlink(img_path)
             raise HTTPException(503, _model_unavailable_message("hunyuan", "Hunyuan3D-2"))
         run_fn = run_hunyuan
         model_label = "Hunyuan3D-2"
     elif model == "trellis":
         if models["trellis"] is None:
+            _safe_unlink(img_path)
             raise HTTPException(503, _model_unavailable_message("trellis", "TRELLIS"))
         run_fn = run_trellis
         model_label = "TRELLIS"
     elif model == "trellis2":
         if models["trellis2"] is None:
+            _safe_unlink(img_path)
             raise HTTPException(503, _model_unavailable_message("trellis2", "TRELLIS.2"))
         run_fn = run_trellis2
         model_label = "TRELLIS.2"
@@ -1535,8 +1746,15 @@ async def convert(
         stl_url=None, tmf_url=None, glb_url=None, obj_url=None,
         preview_url=None, poly_count=None,
         cancel_requested=False,
+        delete_requested=False,
         stage="queued",
         last_update_ts=time.time(),
+        created_at=time.time(),
+        completed_at=None,
+        cleanup_after_ts=None,
+        upload_path=str(img_path),
+        output_dir=str(OUTPUT_DIR / job_id),
+        upload_deleted=False,
     )
 
     out_dir = OUTPUT_DIR / job_id
@@ -1575,12 +1793,22 @@ async def cancel_job(job_id: str):
 async def delete_job(job_id: str):
     if job_id in jobs and not _job_terminal(jobs[job_id].get("status", "")):
         jobs[job_id]["cancel_requested"] = True
+        jobs[job_id]["delete_requested"] = True
         upd(job_id, status="cancelling", message="Cancel requested, waiting for safe stop...", stage="cancelling")
         return {"job_id": job_id, "status": "cancelling", "deleted": False}
 
-    jobs.pop(job_id, None)
-    shutil.rmtree(OUTPUT_DIR / job_id, ignore_errors=True)
+    job = jobs.pop(job_id, None)
+    if job:
+        _cleanup_job_artifacts(job, remove_upload=not job.get("upload_deleted"), remove_output=True)
+    else:
+        shutil.rmtree(OUTPUT_DIR / job_id, ignore_errors=True)
     return {"deleted": job_id}
+
+
+@app.post("/jobs/cleanup")
+async def cleanup_jobs(all: bool = False):
+    result = _prune_old_jobs(force_terminal_cleanup=bool(all))
+    return {"ok": True, "all": bool(all), **result}
 
 
 app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")

@@ -9,6 +9,7 @@ if [[ ! -x "venv/bin/python" ]]; then
 fi
 
 PROFILE="${1:-auto}" # auto | nvidia | mac | cpu
+ACTIVE_MODELS="${2:-}"
 case "$PROFILE" in
   nvidia|cuda)
     export PIXFORM_DEVICE="cuda"
@@ -28,7 +29,19 @@ case "$PROFILE" in
     ;;
 esac
 
-echo "Starting PIXFORM (PIXFORM_DEVICE=${PIXFORM_DEVICE})..."
+if [[ -z "${ACTIVE_MODELS}" ]]; then
+  echo
+  echo "Choose the active model for this session:"
+  echo "  1 = TripoSR"
+  echo "  2 = Hunyuan3D-2"
+  echo "  3 = TRELLIS"
+  echo "  4 = TRELLIS.2"
+  echo "  A = All installed models (higher memory use)"
+  read -r -p "Active model [1 | 2 | 3 | 4 | A] (Enter = A): " ACTIVE_MODELS
+fi
+export PIXFORM_ACTIVE_MODELS="${ACTIVE_MODELS:-A}"
+
+echo "Starting PIXFORM (PIXFORM_DEVICE=${PIXFORM_DEVICE}, PIXFORM_ACTIVE_MODELS=${PIXFORM_ACTIVE_MODELS})..."
 "venv/bin/python" "backend/app.py" &
 APP_PID=$!
 

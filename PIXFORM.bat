@@ -9,6 +9,7 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 set "PROFILE=%~1"
+set "ACTIVE_MODELS=%~2"
 if /I "%PROFILE%"=="nvidia" set "PIXFORM_DEVICE=cuda"
 if /I "%PROFILE%"=="cuda" set "PIXFORM_DEVICE=cuda"
 if /I "%PROFILE%"=="mac" set "PIXFORM_DEVICE=mps"
@@ -20,7 +21,20 @@ if "%PIXFORM_DEVICE%"=="" (
 )
 if "%PIXFORM_DEVICE%"=="" set "PIXFORM_DEVICE=auto"
 
-echo Starting PIXFORM (PIXFORM_DEVICE=%PIXFORM_DEVICE%)...
+if "%ACTIVE_MODELS%"=="" (
+    echo.
+    echo Choose the active model for this session:
+    echo   1 = TripoSR
+    echo   2 = Hunyuan3D-2
+    echo   3 = TRELLIS
+    echo   4 = TRELLIS.2
+    echo   A = All installed models ^(higher memory use^)
+    set /p ACTIVE_MODELS=Active model [1 ^| 2 ^| 3 ^| 4 ^| A] ^(Enter = A^):
+)
+if "%ACTIVE_MODELS%"=="" set "ACTIVE_MODELS=A"
+set "PIXFORM_ACTIVE_MODELS=%ACTIVE_MODELS%"
+
+echo Starting PIXFORM (PIXFORM_DEVICE=%PIXFORM_DEVICE%, PIXFORM_ACTIVE_MODELS=%PIXFORM_ACTIVE_MODELS%)...
 start "" "venv\Scripts\python.exe" "backend\app.py"
 timeout /t 3 /nobreak >nul
 start "" "http://localhost:8000"
