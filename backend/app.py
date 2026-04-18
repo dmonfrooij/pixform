@@ -1274,8 +1274,8 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
-        ss_steps   = max(12, min(50, steps // 3))
-        slat_steps = max(12, min(50, steps))
+        ss_steps   = max(12, min(steps, steps // 3))
+        slat_steps = max(12, steps)
 
         def infer():
             with torch.no_grad():
@@ -1705,7 +1705,7 @@ async def convert(
     settings = {
         "remove_bg":  remove_bg.lower() == "true",
         "resolution": _normalize_triposr_resolution(resolution),
-        "steps":      max(5, min(100, steps)),
+        "steps":      max(5, min(1000, steps)),
         "post":       post,
     }
 
