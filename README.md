@@ -298,11 +298,14 @@ Basic workflow:
 
 You can press **Stop** while a job is running. Cancellation is best-effort: the current internal stage is allowed to finish safely, then the job moves to `cancelled`.
 
+The job card now also shows a stage heartbeat (`stage` + last update age), so you can see which internal phase is active during long TRELLIS runs.
+
 The backend has these routes for this:
 
 - `GET /health` - model status, device info
 - `POST /convert` - submit image for 3D generation
 - `GET /status/{job_id}` - poll job status
+- `POST /jobs/{job_id}/cancel` - request safe cancellation
 - `DELETE /jobs/{job_id}` - cancel/delete job
 
 ---

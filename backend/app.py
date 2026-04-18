@@ -458,12 +458,15 @@ class JobStatus(BaseModel):
     preview_url: Optional[str] = None
     poly_count:  Optional[int] = None
     cancel_requested: Optional[bool] = None
+    stage: Optional[str] = None
+    last_update_ts: Optional[float] = None
 
 
 # Utilities
 
 def upd(job_id, **kw):
     if job_id in jobs:
+        kw.setdefault("last_update_ts", time.time())
         jobs[job_id].update(kw)
 
 
@@ -839,14 +842,14 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         from tsr.utils import resize_foreground
 
         t_start = time.time()
-        upd(job_id, status="processing", progress=5, message="Loading image...")
+        upd(job_id, status="processing", progress=5, message="Loading image...", stage="load_image")
 
         img = Image.open(image_path).convert("RGBA")
         _assert_not_cancelled(job_id)
 
         # Background removal
         if settings.get("remove_bg", True):
-            upd(job_id, progress=10, message="Removing background...")
+            upd(job_id, progress=10, message="Removing background...", stage="remove_background")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
             _assert_not_cancelled(job_id)
@@ -854,7 +857,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         input_profile = _foreground_profile(img)
 
         # Preprocessing
-        upd(job_id, progress=22, message="Preprocessing image...")
+        upd(job_id, progress=22, message="Preprocessing image...", stage="preprocess")
         img = resize_foreground(img, 0.85)
         img_np = np.array(img, dtype=np.float32) / 255.0
         if img_np.ndim == 3 and img_np.shape[2] == 4:
@@ -868,7 +871,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         img = img.resize((512, 512), Image.LANCZOS)
 
         # Inference
-        upd(job_id, progress=28, message="Generating 3D structure (TripoSR)...")
+        upd(job_id, progress=28, message="Generating 3D structure (TripoSR)...", stage="inference")
         loop = asyncio.get_event_loop()
 
         runtime_device = models.get("runtime_device", "cpu")
@@ -889,7 +892,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         def extract():
             for res in fallbacks:
                 try:
-                    upd(job_id, progress=35, message=f"Extracting mesh at resolution {res}...")
+                    upd(job_id, progress=35, message=f"Extracting mesh at resolution {res}...", stage="mesh_extract")
                     result = models["triposr"].extract_mesh(
                         scene_codes, resolution=res, has_vertex_color=False
                     )[0]
@@ -904,20 +907,20 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         raw, used_res = await loop.run_in_executor(None, extract)
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=75, message=f"Mesh extracted at {used_res}")
+        upd(job_id, progress=75, message=f"Mesh extracted at {used_res}", stage="mesh_ready")
 
         # Post-processing
         mesh = to_trimesh(raw)
         if len(mesh.faces) == 0:
             raise RuntimeError("TripoSR produced an empty mesh")
         post_level = settings.get("post", "standard")
-        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
         loop = asyncio.get_event_loop()
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
         _assert_not_cancelled(job_id)
 
         # Export
-        upd(job_id, progress=95, message="Exporting files...")
+        upd(job_id, progress=95, message="Exporting files...", stage="export")
         export_all(mesh, out_dir, job_id)
         render_preview(mesh, out_dir / "preview.png")
         _assert_not_cancelled(job_id)
@@ -929,6 +932,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             model_used=f"TripoSR (res {used_res})",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
+            stage="done",
         )
 
     except Exception as e:
@@ -947,14 +951,14 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         from PIL import Image
 
         t_start = time.time()
-        upd(job_id, status="processing", progress=5, message="Loading image...")
+        upd(job_id, status="processing", progress=5, message="Loading image...", stage="load_image")
 
         img = Image.open(image_path).convert("RGBA")
         _assert_not_cancelled(job_id)
 
         # Background removal
         if settings.get("remove_bg", True):
-            upd(job_id, progress=10, message="Removing background...")
+            upd(job_id, progress=10, message="Removing background...", stage="remove_background")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
             _assert_not_cancelled(job_id)
@@ -976,8 +980,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
         # Resize to 1024x1024 for higher quality input
         img_rgb = img_rgb.resize((1024, 1024), Image.LANCZOS)
 
-        upd(job_id, progress=22, message="Generating 3D shape with Hunyuan3D-2...")
-        upd(job_id, progress=25, message="This takes 2-5 minutes, please wait...")
+        upd(job_id, progress=22, message="Generating 3D shape with Hunyuan3D-2...", stage="preprocess")
+        upd(job_id, progress=25, message="This takes 2-5 minutes, please wait...", stage="inference")
 
         loop = asyncio.get_event_loop()
 
@@ -996,23 +1000,23 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
                     if os.path.exists(tmp):
                         os.unlink(tmp)
 
-        upd(job_id, progress=30, message="Running Hunyuan3D-2 diffusion model...")
+        upd(job_id, progress=30, message="Running Hunyuan3D-2 diffusion model...", stage="inference")
         raw_mesh = await loop.run_in_executor(None, infer)
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="Mesh generated")
+        upd(job_id, progress=78, message="Mesh generated", stage="mesh_ready")
 
         # Post-processing
         mesh = to_trimesh(raw_mesh)
         if len(mesh.faces) == 0:
             raise RuntimeError("Hunyuan3D-2 produced an empty mesh")
         post_level = settings.get("post", "standard")
-        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
         _assert_not_cancelled(job_id)
 
         # Export
-        upd(job_id, progress=95, message="Exporting files...")
+        upd(job_id, progress=95, message="Exporting files...", stage="export")
         export_all(mesh, out_dir, job_id)
         render_preview(mesh, out_dir / "preview.png")
         _assert_not_cancelled(job_id)
@@ -1024,6 +1028,7 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             model_used="Hunyuan3D-2",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
+            stage="done",
         )
 
     except Exception as e:
@@ -1042,22 +1047,22 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         from PIL import Image
 
         t_start = time.time()
-        upd(job_id, status="processing", progress=5, message="Loading image...")
+        upd(job_id, status="processing", progress=5, message="Loading image...", stage="load_image")
 
         img = Image.open(image_path).convert("RGBA")
         _assert_not_cancelled(job_id)
 
         # Background removal (our rembg session; TRELLIS will skip its own if RGBA alpha is set)
         if settings.get("remove_bg", True):
-            upd(job_id, progress=10, message="Removing background...")
+            upd(job_id, progress=10, message="Removing background...", stage="remove_background")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
             _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
-        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...")
-        upd(job_id, progress=25, message="This takes 5 to 10 minutes, please wait...")
+        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...", stage="preprocess")
+        upd(job_id, progress=25, message="This takes 5 to 10 minutes, please wait...", stage="inference")
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
@@ -1076,11 +1081,11 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
                 )
             return outputs
 
-        upd(job_id, progress=30, message="Running TRELLIS diffusion model...")
+        upd(job_id, progress=30, message="Running TRELLIS diffusion model...", stage="inference")
         outputs = await loop.run_in_executor(None, infer)
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="3D structure generated")
+        upd(job_id, progress=78, message="3D structure generated", stage="mesh_ready")
 
         glb_textured = False
         textured_enabled = str(os.getenv("PIXFORM_TRELLIS_TEXTURED", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -1102,7 +1107,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
                 return False
 
         if textured_enabled:
-            upd(job_id, progress=79, message="Generating textured GLB (optional)...")
+            upd(job_id, progress=79, message="Generating textured GLB (optional)...", stage="texture")
             try:
                 tex_task = loop.run_in_executor(None, make_textured_glb)
                 glb_textured = await asyncio.wait_for(tex_task, timeout=texture_timeout) if texture_timeout else await tex_task
@@ -1129,7 +1134,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             raise RuntimeError("TRELLIS produced an empty mesh")
 
         post_level = settings.get("post", "standard")
-        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
         post_default = {"none": 600, "light": 900, "standard": 1800, "heavy": 2700}.get(post_level, 1800)
         post_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS_POST_TIMEOUT_SEC", post_default)
         try:
@@ -1137,11 +1142,11 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             mesh = await asyncio.wait_for(post_task, timeout=post_timeout) if post_timeout else await post_task
         except asyncio.TimeoutError:
             logger.warning(f"TRELLIS postprocess timed out after {post_timeout}s; using fast fallback mesh finalize")
-            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...")
+            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
             mesh = _fast_finalize_mesh(raw_mesh.copy(), input_profile)
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=95, message="Exporting files...")
+        upd(job_id, progress=95, message="Exporting files...", stage="export")
 
         stl      = out_dir / "model.stl"
         tmf      = out_dir / "model.3mf"
@@ -1190,6 +1195,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             model_used="TRELLIS",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
+            stage="done",
         )
 
     except Exception as e:
@@ -1208,22 +1214,22 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         from PIL import Image
 
         t_start = time.time()
-        upd(job_id, status="processing", progress=5, message="Loading image...")
+        upd(job_id, status="processing", progress=5, message="Loading image...", stage="load_image")
 
         img = Image.open(image_path).convert("RGBA")
         _assert_not_cancelled(job_id)
 
         # Background removal (trellis2 honours RGBA alpha - no double-processing)
         if settings.get("remove_bg", True):
-            upd(job_id, progress=10, message="Removing background...")
+            upd(job_id, progress=10, message="Removing background...", stage="remove_background")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
             _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
-        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS.2...")
-        upd(job_id, progress=25, message="This takes 6 to 12 minutes, please wait...")
+        upd(job_id, progress=22, message="Generating 3D shape with TRELLIS.2...", stage="preprocess")
+        upd(job_id, progress=25, message="This takes 6 to 12 minutes, please wait...", stage="inference")
 
         loop = asyncio.get_event_loop()
         steps = settings.get("steps", 50)
@@ -1238,11 +1244,11 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
                     preprocess_image=True,
                 )
 
-        upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...")
+        upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...", stage="inference")
         outputs = await loop.run_in_executor(None, infer)
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="3D structure generated")
+        upd(job_id, progress=78, message="3D structure generated", stage="mesh_ready")
 
         # outputs is List[MeshWithVoxel]; take first sample
         m = outputs[0]
@@ -1291,12 +1297,12 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             raise RuntimeError("TRELLIS.2 produced an empty mesh")
 
         post_level = settings.get("post", "standard")
-        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
+        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
         mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
         _assert_not_cancelled(job_id)
 
         # ── Export ─────────────────────────────────────────────────────────────
-        upd(job_id, progress=95, message="Exporting files...")
+        upd(job_id, progress=95, message="Exporting files...", stage="export")
 
         stl      = out_dir / "model.stl"
         tmf      = out_dir / "model.3mf"
@@ -1344,6 +1350,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             model_used="TRELLIS.2",
             time_taken=elapsed,
             preview_url=f"/outputs/{job_id}/preview.png",
+            stage="done",
         )
 
     except Exception as e:
@@ -1359,7 +1366,8 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     import trimesh
     for p, m in [(20, "Analyzing..."), (50, "Building mesh..."), (80, "Exporting...")]:
-        upd(job_id, status="processing", progress=p, message=m)
+        stage = "analyze" if p == 20 else ("build" if p == 50 else "export")
+        upd(job_id, status="processing", progress=p, message=m, stage=stage)
         await asyncio.sleep(0.8)
     mesh = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
     export_all(mesh, out_dir, job_id)
@@ -1367,7 +1375,8 @@ async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict)
     upd(job_id, status="done", progress=100,
         message="Demo mode - no GPU available",
         model_used="Demo",
-        preview_url=f"/outputs/{job_id}/preview.png")
+        preview_url=f"/outputs/{job_id}/preview.png",
+        stage="done")
 
 
 # ÔöÇÔöÇ Routes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
@@ -1470,6 +1479,8 @@ async def convert(
         stl_url=None, tmf_url=None, glb_url=None, obj_url=None,
         preview_url=None, poly_count=None,
         cancel_requested=False,
+        stage="queued",
+        last_update_ts=time.time(),
     )
 
     out_dir = OUTPUT_DIR / job_id
@@ -1497,8 +1508,9 @@ async def cancel_job(job_id: str):
 
     job["cancel_requested"] = True
     if job.get("status") in {"queued", "processing"}:
-        job["status"] = "cancelling"
-        job["message"] = "Cancel requested, waiting for safe stop..."
+        upd(job_id, status="cancelling", message="Cancel requested, waiting for safe stop...", stage="cancelling")
+    else:
+        upd(job_id)
 
     return {"job_id": job_id, "status": job.get("status"), "cancel_requested": True}
 
@@ -1507,8 +1519,7 @@ async def cancel_job(job_id: str):
 async def delete_job(job_id: str):
     if job_id in jobs and not _job_terminal(jobs[job_id].get("status", "")):
         jobs[job_id]["cancel_requested"] = True
-        jobs[job_id]["status"] = "cancelling"
-        jobs[job_id]["message"] = "Cancel requested, waiting for safe stop..."
+        upd(job_id, status="cancelling", message="Cancel requested, waiting for safe stop...", stage="cancelling")
         return {"job_id": job_id, "status": "cancelling", "deleted": False}
 
     jobs.pop(job_id, None)
