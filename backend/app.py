@@ -2,7 +2,7 @@
 PIXFORM Backend
 Image to 3D pipeline ÔÇö TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
 """
-import os, sys, uuid, shutil, asyncio, logging, zipfile, time
+import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
@@ -25,6 +25,7 @@ logger = logging.getLogger("pixform")
 BASE_DIR   = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads";  UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = BASE_DIR / "outputs";  OUTPUT_DIR.mkdir(exist_ok=True)
+MODEL_SELECTION_FILE = BASE_DIR.parent / ".pixform_models.json"
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -42,6 +43,7 @@ models = {
     "trellis":   None,
     "trellis2":  None,
     "rembg_sess": None,
+    "installed_models": {},
     "runtime_device": "cpu",
 }
 model_health = {
@@ -129,6 +131,128 @@ def _format_model_load_error(model_name: str, exc: Exception) -> str:
     return raw
 
 
+def _resolve_installed_models() -> dict:
+    detected = {
+        "triposr": (BASE_DIR / "tsr").exists(),
+        "hunyuan": (BASE_DIR / "hy3dgen").exists(),
+        "trellis": (BASE_DIR / "trellis").exists(),
+        "trellis2": (BASE_DIR / "trellis2").exists(),
+    }
+    if not MODEL_SELECTION_FILE.exists():
+        return detected
+    try:
+        data = json.loads(MODEL_SELECTION_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            for name in detected:
+                if name in data:
+                    detected[name] = bool(data[name]) and detected[name]
+    except Exception as e:
+        logger.warning(f"Could not read model selection file {MODEL_SELECTION_FILE}: {e}")
+    return detected
+
+
+def _foreground_profile(img) -> dict:
+    rgba = img.convert("RGBA")
+    arr = np.asarray(rgba)
+    if arr.ndim != 3 or arr.shape[2] < 4:
+        h, w = arr.shape[:2]
+        return {
+            "aspect_ratio": float(w / max(h, 1)),
+            "subject_width": int(w),
+            "subject_height": int(h),
+            "mode": "image_bounds",
+        }
+
+    alpha = arr[:, :, 3]
+    mask = alpha > 24
+    if mask.any():
+        ys, xs = np.nonzero(mask)
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        mode = "alpha_bounds"
+    else:
+        h, w = alpha.shape
+        x0, x1, y0, y1 = 0, w, 0, h
+        mode = "image_bounds"
+
+    subject_w = max(1, x1 - x0)
+    subject_h = max(1, y1 - y0)
+    return {
+        "aspect_ratio": float(subject_w / subject_h),
+        "subject_width": subject_w,
+        "subject_height": subject_h,
+        "mode": mode,
+    }
+
+
+def _apply_input_aspect_correction(mesh, target_profile: Optional[dict]):
+    if not target_profile:
+        return mesh
+
+    try:
+        target_ratio = float(target_profile.get("aspect_ratio") or 0.0)
+    except Exception:
+        return mesh
+
+    if not np.isfinite(target_ratio) or target_ratio <= 0:
+        return mesh
+
+    extents = np.asarray(mesh.extents, dtype=np.float64)
+    if extents.shape[0] < 3 or extents[1] <= 1e-6:
+        return mesh
+
+    candidates = []
+    for axis, vertical_axis in ((0, 1), (2, 1), (0, 2)):
+        if extents[axis] <= 1e-6 or extents[vertical_axis] <= 1e-6:
+            continue
+        current_ratio = float(extents[axis] / extents[vertical_axis])
+        candidates.append((abs(current_ratio - target_ratio), axis, vertical_axis, current_ratio))
+
+    if not candidates:
+        return mesh
+
+    _, axis, vertical_axis, current_ratio = min(candidates, key=lambda item: item[0])
+    if current_ratio <= 0:
+        return mesh
+
+    scale_factor = float(np.clip(target_ratio / current_ratio, 0.2, 5.0))
+    if not np.isfinite(scale_factor) or abs(scale_factor - 1.0) < 0.03:
+        return mesh
+
+    center = np.asarray(mesh.bounding_box.centroid, dtype=np.float64)
+    scale = np.ones(3, dtype=np.float64)
+    scale[axis] = scale_factor
+
+    mesh.apply_translation(-center)
+    mesh.apply_scale(scale)
+    mesh.apply_translation(center)
+
+    axis_name = "X" if axis == 0 else "Z"
+    vertical_name = "X" if vertical_axis == 0 else ("Y" if vertical_axis == 1 else "Z")
+    logger.info(
+        "Applied input aspect correction on %s/%s axes: target %.3f, current %.3f, scale %.3f (%s)",
+        axis_name,
+        vertical_name,
+        target_ratio,
+        current_ratio,
+        scale_factor,
+        target_profile.get("mode", "unknown"),
+    )
+    return mesh
+
+
+def _model_unavailable_message(model_key: str, label: str) -> str:
+    status = model_health[model_key]["status"]
+    detail = model_health[model_key]["error"]
+    if status == "not_installed":
+        return f"{label} is not installed. Re-run install.ps1 and include {label}."
+    if status == "skipped" and detail:
+        return f"{label} is unavailable on this runtime: {detail}."
+    if detail:
+        return f"{label} is not loaded: {detail}"
+    return f"{label} is not loaded. Check /health and setup."
+
+
 # ÔöÇÔöÇ Model loading ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 def load_all_models():
@@ -136,6 +260,8 @@ def load_all_models():
 
     runtime_device = resolve_runtime_device()
     models["runtime_device"] = runtime_device
+    installed_models = _resolve_installed_models()
+    models["installed_models"] = installed_models
     logger.info(f"Runtime device: {runtime_device}")
 
     # rembg session (RMBG-1.4 ÔÇö best background removal quality)
@@ -166,121 +292,143 @@ def load_all_models():
         logger.warning("No GPU backend available ÔÇö running on CPU")
 
     # TripoSR
-    set_model_health("triposr", "loading")
-    try:
-        from tsr.system import TSR
-        logger.info("Loading TripoSR model (~1 GB)...")
-        m = TSR.from_pretrained(
-            "stabilityai/TripoSR",
-            config_name="config.yaml",
-            weight_name="model.ckpt",
-        )
-        m.renderer.set_chunk_size(131072 if runtime_device == "cuda" else 65536)
-        m.to(runtime_device)
-        models["triposr"] = m
-        set_model_health("triposr", "loaded")
-        logger.info(f"Ô£à TripoSR loaded on {runtime_device}")
-    except Exception as e:
-        set_model_health("triposr", "failed", str(e))
-        logger.warning(f"TripoSR failed to load: {e}")
+    if not installed_models.get("triposr"):
+        set_model_health("triposr", "not_installed", "Not installed by installer selection")
+    else:
+        set_model_health("triposr", "loading")
+        try:
+            from tsr.system import TSR
+            logger.info("Loading TripoSR model (~1 GB)...")
+            m = TSR.from_pretrained(
+                "stabilityai/TripoSR",
+                config_name="config.yaml",
+                weight_name="model.ckpt",
+            )
+            m.renderer.set_chunk_size(131072 if runtime_device == "cuda" else 65536)
+            m.to(runtime_device)
+            models["triposr"] = m
+            set_model_health("triposr", "loaded")
+            logger.info(f"✅ TripoSR loaded on {runtime_device}")
+        except Exception as e:
+            set_model_health("triposr", "failed", str(e))
+            logger.warning(f"TripoSR failed to load: {e}")
 
     # Hunyuan3D-2 shape
     if runtime_device != "cuda":
-        set_model_health("hunyuan", "skipped", "CUDA/NVIDIA required")
-        set_model_health("trellis", "skipped", "CUDA/NVIDIA required")
+        if not installed_models.get("hunyuan"):
+            set_model_health("hunyuan", "not_installed", "Not installed by installer selection")
+        else:
+            set_model_health("hunyuan", "skipped", "CUDA/NVIDIA required")
+        if not installed_models.get("trellis"):
+            set_model_health("trellis", "not_installed", "Not installed by installer selection")
+        else:
+            set_model_health("trellis", "skipped", "CUDA/NVIDIA required")
+        if not installed_models.get("trellis2"):
+            set_model_health("trellis2", "not_installed", "Not installed by installer selection")
+        else:
+            set_model_health("trellis2", "skipped", "CUDA/NVIDIA required")
         logger.warning("Hunyuan3D-2 skipped: currently supported only on CUDA/NVIDIA")
         return
 
-    try:
-        set_model_health("hunyuan", "loading")
-        # Ensure hy3dgen is on path (it's a folder, not an installed package)
-        _p = BASE_DIR / "hy3dgen"
-        if _p.exists() and str(_p) not in sys.path:
-            sys.path.insert(0, str(_p))
-        from hy3dgen.shapegen.pipelines import Hunyuan3DDiTFlowMatchingPipeline
-        logger.info("Loading Hunyuan3D-2 model (~8 GB first time, cached after)...")
-        pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            "tencent/Hunyuan3D-2",
-            use_safetensors=True,
-            device="cuda",
-        )
-        models["hunyuan"] = pipe
-        set_model_health("hunyuan", "loaded")
-        logger.info("Ô£à Hunyuan3D-2 loaded")
-    except Exception as e:
-        set_model_health("hunyuan", "failed", str(e))
-        logger.warning(f"Hunyuan3D-2 failed to load: {e}")
+    if not installed_models.get("hunyuan"):
+        set_model_health("hunyuan", "not_installed", "Not installed by installer selection")
+    else:
+        try:
+            set_model_health("hunyuan", "loading")
+            # Ensure hy3dgen is on path (it's a folder, not an installed package)
+            _p = BASE_DIR / "hy3dgen"
+            if _p.exists() and str(_p) not in sys.path:
+                sys.path.insert(0, str(_p))
+            from hy3dgen.shapegen.pipelines import Hunyuan3DDiTFlowMatchingPipeline
+            logger.info("Loading Hunyuan3D-2 model (~8 GB first time, cached after)...")
+            pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+                "tencent/Hunyuan3D-2",
+                use_safetensors=True,
+                device="cuda",
+            )
+            models["hunyuan"] = pipe
+            set_model_health("hunyuan", "loaded")
+            logger.info("✅ Hunyuan3D-2 loaded")
+        except Exception as e:
+            set_model_health("hunyuan", "failed", str(e))
+            logger.warning(f"Hunyuan3D-2 failed to load: {e}")
 
     # TRELLIS (CUDA-only, 12+ GB VRAM recommended)
-    try:
-        set_model_health("trellis", "loading")
-        os.environ.setdefault("SPCONV_ALGO", "native")
-        os.environ.setdefault("ATTN_BACKEND", "xformers")
-        os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
+    if not installed_models.get("trellis"):
+        set_model_health("trellis", "not_installed", "Not installed by installer selection")
+    else:
+        try:
+            set_model_health("trellis", "loading")
+            os.environ.setdefault("SPCONV_ALGO", "native")
+            os.environ.setdefault("ATTN_BACKEND", "xformers")
+            os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
 
-        # Pre-check dependencies
-        import spconv
-        import easydict
+            # Pre-check dependencies
+            import spconv
+            import easydict
 
-        from trellis.pipelines import TrellisImageTo3DPipeline
-        logger.info("Loading TRELLIS model (~16 GB first time, cached after)...")
-        pipe = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
-        pipe.cuda()
-        models["trellis"] = pipe
-        set_model_health("trellis", "loaded")
-        logger.info("✅ TRELLIS loaded")
-    except ImportError as e:
-        dep_name = str(e)
-        if "spconv" in dep_name:
-            set_model_health("trellis", "failed", "Missing: spconv (sparse convolutions)")
-            logger.warning("TRELLIS failed to load: Missing spconv - ensure it was installed during setup")
-        elif "kaolin" in dep_name:
-            set_model_health(
-                "trellis",
-                "failed",
-                "Missing: kaolin (or failed flexicubes fallback patch in install.ps1)",
-            )
-            logger.warning("TRELLIS failed to load: Missing kaolin and no fallback patch detected")
-        elif "easydict" in dep_name:
-            set_model_health("trellis", "failed", "Missing: easydict")
-            logger.warning("TRELLIS failed to load: Missing easydict")
-        else:
-            set_model_health("trellis", "failed", str(e))
+            from trellis.pipelines import TrellisImageTo3DPipeline
+            logger.info("Loading TRELLIS model (~16 GB first time, cached after)...")
+            pipe = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
+            pipe.cuda()
+            models["trellis"] = pipe
+            set_model_health("trellis", "loaded")
+            logger.info("✅ TRELLIS loaded")
+        except ImportError as e:
+            dep_name = str(e)
+            if "spconv" in dep_name:
+                set_model_health("trellis", "failed", "Missing: spconv (sparse convolutions)")
+                logger.warning("TRELLIS failed to load: Missing spconv - ensure it was installed during setup")
+            elif "kaolin" in dep_name:
+                set_model_health(
+                    "trellis",
+                    "failed",
+                    "Missing: kaolin (or failed flexicubes fallback patch in install.ps1)",
+                )
+                logger.warning("TRELLIS failed to load: Missing kaolin and no fallback patch detected")
+            elif "easydict" in dep_name:
+                set_model_health("trellis", "failed", "Missing: easydict")
+                logger.warning("TRELLIS failed to load: Missing easydict")
+            else:
+                set_model_health("trellis", "failed", str(e))
+                logger.warning(f"TRELLIS failed to load: {e}")
+        except Exception as e:
+            set_model_health("trellis", "failed", _format_model_load_error("TRELLIS", e))
             logger.warning(f"TRELLIS failed to load: {e}")
-    except Exception as e:
-        set_model_health("trellis", "failed", _format_model_load_error("TRELLIS", e))
-        logger.warning(f"TRELLIS failed to load: {e}")
 
     # TRELLIS.2 (CUDA-only, requires cumesh + flex_gemm + o_voxel + spconv)
-    try:
-        import importlib as _il
-        set_model_health("trellis2", "loading")
-        _trellis2_pkg = BASE_DIR / "trellis2"
-        if not _trellis2_pkg.exists():
-            raise ImportError("trellis2 package not found in backend/")
+    if not installed_models.get("trellis2"):
+        set_model_health("trellis2", "not_installed", "Not installed by installer selection")
+    else:
+        try:
+            import importlib as _il
+            set_model_health("trellis2", "loading")
+            _trellis2_pkg = BASE_DIR / "trellis2"
+            if not _trellis2_pkg.exists():
+                raise ImportError("trellis2 package not found in backend/")
 
-        # Probe required native deps before attempting a full load
-        _missing = [d for d in ("cumesh", "flex_gemm") if _il.util.find_spec(d) is None]
-        if _missing:
-            raise ImportError(f"Missing TRELLIS.2 runtime deps: {', '.join(_missing)}")
+            # Probe required native deps before attempting a full load
+            _missing = [d for d in ("cumesh", "flex_gemm") if _il.util.find_spec(d) is None]
+            if _missing:
+                raise ImportError(f"Missing TRELLIS.2 runtime deps: {', '.join(_missing)}")
 
-        os.environ.setdefault("SPARSE_CONV_BACKEND", "spconv")
-        os.environ.setdefault("ATTN_BACKEND", "xformers")
-        os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
+            os.environ.setdefault("SPARSE_CONV_BACKEND", "spconv")
+            os.environ.setdefault("ATTN_BACKEND", "xformers")
+            os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
 
-        from trellis2.pipelines import Trellis2ImageTo3DPipeline
-        logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
-        pipe2 = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
-        pipe2.cuda()
-        models["trellis2"] = pipe2
-        set_model_health("trellis2", "loaded")
-        logger.info("✅ TRELLIS.2 loaded")
-    except ImportError as e:
-        set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
-        logger.warning(f"TRELLIS.2 failed to load: {e}")
-    except Exception as e:
-        set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
-        logger.warning(f"TRELLIS.2 failed to load: {e}")
+            from trellis2.pipelines import Trellis2ImageTo3DPipeline
+            logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
+            pipe2 = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
+            pipe2.cuda()
+            models["trellis2"] = pipe2
+            set_model_health("trellis2", "loaded")
+            logger.info("✅ TRELLIS.2 loaded")
+        except ImportError as e:
+            set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
+            logger.warning(f"TRELLIS.2 failed to load: {e}")
+        except Exception as e:
+            set_model_health("trellis2", "failed", _format_model_load_error("TRELLIS.2", e))
+            logger.warning(f"TRELLIS.2 failed to load: {e}")
 
 
 @asynccontextmanager
@@ -334,7 +482,7 @@ def remove_background(img, job_id):
         return img.convert("RGBA")
 
 
-def postprocess_mesh(mesh, job_id, level="standard"):
+def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[dict] = None):
     """High quality mesh post-processing for 3D printing.
     level: none | light | standard | heavy
     Goal: always produce a 100% watertight, slicer-ready mesh.
@@ -446,7 +594,10 @@ def postprocess_mesh(mesh, job_id, level="standard"):
     except Exception:
         pass
 
-    # ÔöÇÔöÇ 8. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ 8. Match final proportions to the input image silhouette ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    mesh = _apply_input_aspect_correction(mesh, target_profile)
+
+    # ÔöÇÔöÇ 9. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     bounds = mesh.bounds
     size = max(bounds[1] - bounds[0])
     if size > 0:
@@ -648,6 +799,8 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
 
+        input_profile = _foreground_profile(img)
+
         # Preprocessing
         upd(job_id, progress=22, message="Preprocessing image...")
         img = resize_foreground(img, 0.85)
@@ -706,7 +859,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
         loop = asyncio.get_event_loop()
-        mesh = await loop.run_in_executor(None, postprocess_mesh, mesh, job_id, post_level)
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
 
         # Export
         upd(job_id, progress=95, message="Exporting files...")
@@ -744,6 +897,8 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+
+        input_profile = _foreground_profile(img)
 
         # Convert to RGB with white background for Hunyuan3D
         img_rgb = Image.new("RGB", img.size, (255, 255, 255))
@@ -791,7 +946,7 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             raise RuntimeError("Hunyuan3D-2 produced an empty mesh")
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
-        mesh = await loop.run_in_executor(None, postprocess_mesh, mesh, job_id, post_level)
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
 
         # Export
         upd(job_id, progress=95, message="Exporting files...")
@@ -829,6 +984,8 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             upd(job_id, progress=10, message="Removing background...")
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
+
+        input_profile = _foreground_profile(img)
 
         upd(job_id, progress=22, message="Generating 3D shape with TRELLIS...")
         upd(job_id, progress=25, message="This takes 5 TO 10 minutes, please wait...")
@@ -893,7 +1050,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
 
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
-        mesh = await loop.run_in_executor(None, postprocess_mesh, raw_mesh, job_id, post_level)
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
 
         # ÔöÇÔöÇ Export ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
@@ -970,6 +1127,8 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             loop = asyncio.get_event_loop()
             img = await loop.run_in_executor(None, remove_background, img, job_id)
 
+        input_profile = _foreground_profile(img)
+
         upd(job_id, progress=22, message="Generating 3D shape with TRELLIS.2...")
         upd(job_id, progress=25, message="This takes 6–12 minutes, please wait...")
 
@@ -1037,7 +1196,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
 
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...")
-        mesh = await loop.run_in_executor(None, postprocess_mesh, raw_mesh, job_id, post_level)
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
 
         # ── Export ─────────────────────────────────────────────────────────────
         upd(job_id, progress=95, message="Exporting files...")
@@ -1122,6 +1281,10 @@ async def health():
         "hunyuan":    models["hunyuan"] is not None,
         "trellis":    models["trellis"] is not None,
         "trellis2":   models["trellis2"] is not None,
+        "triposr_installed": models.get("installed_models", {}).get("triposr", False),
+        "hunyuan_installed": models.get("installed_models", {}).get("hunyuan", False),
+        "trellis_installed": models.get("installed_models", {}).get("trellis", False),
+        "trellis2_installed": models.get("installed_models", {}).get("trellis2", False),
         "rembg":      models["rembg_sess"] is not None,
         "cuda":       torch.cuda.is_available(),
         "mps":        mps_ok,
@@ -1174,24 +1337,26 @@ async def convert(
     }
 
     # Determine which model to use
-    if model == "hunyuan":
+    if model == "triposr":
+        if models["triposr"] is None:
+            raise HTTPException(503, _model_unavailable_message("triposr", "TripoSR"))
+        run_fn = run_triposr
+        model_label = "TripoSR"
+    elif model == "hunyuan":
         if models["hunyuan"] is None:
-            raise HTTPException(503, "Hunyuan3D-2 model is not loaded. Check /health and GPU setup.")
+            raise HTTPException(503, _model_unavailable_message("hunyuan", "Hunyuan3D-2"))
         run_fn = run_hunyuan
         model_label = "Hunyuan3D-2"
     elif model == "trellis":
         if models["trellis"] is None:
-            raise HTTPException(503, "TRELLIS model is not loaded. Check /health and GPU setup.")
+            raise HTTPException(503, _model_unavailable_message("trellis", "TRELLIS"))
         run_fn = run_trellis
         model_label = "TRELLIS"
     elif model == "trellis2":
         if models["trellis2"] is None:
-            raise HTTPException(503, "TRELLIS.2 model is not loaded. Check /health and GPU setup.")
+            raise HTTPException(503, _model_unavailable_message("trellis2", "TRELLIS.2"))
         run_fn = run_trellis2
         model_label = "TRELLIS.2"
-    elif models["triposr"] is not None:
-        run_fn = run_triposr
-        model_label = "TripoSR"
     else:
         run_fn = run_demo
         model_label = "Demo"

@@ -122,6 +122,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 -Profile auto
 ```
 
+`install.ps1` now asks which models you want to install. Press Enter for all models, or pass them explicitly:
+
+```powershell
+.\install.ps1 -Profile nvidia -Models triposr,trellis
+.\install.ps1 -Profile auto -Models 1,2
+```
+
 For `-Profile nvidia` you can pre-set the toolkit in the current shell (example for CUDA 12.4):
 
 ```powershell
@@ -145,16 +152,22 @@ Available profiles for `install.ps1`:
 - `nvidia` — forces CUDA installation and installs CUDA-only model support
 - `cpu` — installs CPU-only runtime
 
+Model selection values for `install.ps1 -Models`:
+
+- `all`
+- `triposr`, `hunyuan`, `trellis`, `trellis2`
+- numeric shortcuts: `1=triposr`, `2=hunyuan`, `3=trellis`, `4=trellis2`
+
 What `install.ps1` does:
 
 - recreates `venv`
 - installs PyTorch 2.5.1 with CUDA 12.4 support
 - installs core packages (FastAPI, rembg, OpenCV, trimesh)
-- clones **Hunyuan3D-2**
-- clones **TripoSR**
-- clones **TRELLIS** only in CUDA profile
+- clones only the selected model repos
+- clones **TRELLIS** / **TRELLIS.2** only when selected and CUDA is available
 - patches TRELLIS for kaolin-free operation
 - writes chosen runtime device to `.pixform_device`
+- writes selected model state to `.pixform_models.json`
 
 ### macOS / MacBook Pro
 

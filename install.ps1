@@ -2,7 +2,8 @@
 # Right-click > "Run with PowerShell"
 param(
     [ValidateSet("auto", "nvidia", "cpu")]
-    [string]$Profile = "auto"
+    [string]$Profile = "auto",
+    [string]$Models = ""
 )
 
 Set-Location $PSScriptRoot
@@ -305,6 +306,70 @@ function Remove-PathSafely($path, $label) {
     }
 }
 
+$AllModelKeys = @("triposr", "hunyuan", "trellis", "trellis2")
+$ModelSelectionHelp = "all | triposr,hunyuan,trellis,trellis2 | 1,2,3,4"
+
+function Parse-ModelSelection([string]$rawSelection) {
+    $selected = [ordered]@{
+        triposr = $false
+        hunyuan = $false
+        trellis = $false
+        trellis2 = $false
+    }
+    $aliases = @{
+        "1" = "triposr"
+        "2" = "hunyuan"
+        "3" = "trellis"
+        "4" = "trellis2"
+        "hunyuan3d-2" = "hunyuan"
+        "hunyuan3d2" = "hunyuan"
+        "trellis.2" = "trellis2"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rawSelection) -or $rawSelection.Trim().ToLowerInvariant() -eq "all") {
+        foreach ($name in $AllModelKeys) { $selected[$name] = $true }
+        return $selected
+    }
+
+    $tokens = $rawSelection -split "[\s,;]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($token in $tokens) {
+        $name = $token.Trim().ToLowerInvariant()
+        if ($aliases.ContainsKey($name)) { $name = $aliases[$name] }
+        if (-not $selected.Contains($name)) {
+            throw "Unknown model '$token'. Use: $ModelSelectionHelp"
+        }
+        $selected[$name] = $true
+    }
+
+    if (-not (($selected.Values | Where-Object { $_ }).Count)) {
+        throw "No valid models selected. Use: $ModelSelectionHelp"
+    }
+
+    return $selected
+}
+
+function Prompt-ModelSelection {
+    Info "Choose which models to install:"
+    Info "  1 = TripoSR      (fast, CPU/MPS/CUDA)"
+    Info "  2 = Hunyuan3D-2  (quality, CUDA only)"
+    Info "  3 = TRELLIS      (best quality, CUDA only)"
+    Info "  4 = TRELLIS.2    (experimental, CUDA only)"
+    $reply = Read-Host "Install models [$ModelSelectionHelp] (Enter = all)"
+    return Parse-ModelSelection $reply
+}
+
+function Get-SelectedModelNames($selectedModels) {
+    return @($AllModelKeys | Where-Object { $selectedModels[$_] })
+}
+
+function Remove-ModelArtifacts($label, [string[]]$paths) {
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-PathSafely $path $label
+        }
+    }
+}
+
 Clear-Host
 Write-Host "  PIXFORM - Image to 3D Pipeline" -ForegroundColor Yellow
 Write-Host "  Installing..." -ForegroundColor Gray
@@ -349,6 +414,31 @@ if ($Profile -eq "nvidia") {
 }
 Info "Install profile: $Profile (runtime device target: $runtimeDevice)"
 
+try {
+    if ([string]::IsNullOrWhiteSpace($Models)) {
+        $SelectedModels = Prompt-ModelSelection
+    } else {
+        $SelectedModels = Parse-ModelSelection $Models
+    }
+} catch {
+    Fail $_.Exception.Message
+}
+
+if ($runtimeDevice -ne "cuda") {
+    foreach ($gpuOnlyModel in @("hunyuan", "trellis", "trellis2")) {
+        if ($SelectedModels[$gpuOnlyModel]) {
+            Warn "$gpuOnlyModel requires CUDA/NVIDIA and will be skipped for profile '$Profile'."
+            $SelectedModels[$gpuOnlyModel] = $false
+        }
+    }
+}
+
+$selectedModelNames = Get-SelectedModelNames $SelectedModels
+if (-not $selectedModelNames.Count) {
+    Fail "No installable models remain for the selected profile. Choose at least TripoSR or rerun with -Profile nvidia."
+}
+Info ("Selected models: " + ($selectedModelNames -join ", "))
+
 # ── Virtual environment ────────────────────────────────────────────────────────
 Step "Creating virtual environment"
 $venvPath = Join-Path $PSScriptRoot "venv"
@@ -361,6 +451,21 @@ $PY = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $PY)) { Fail "Failed to create venv" }
 & "$PY" -m pip install --upgrade pip setuptools wheel -q
 OK "Virtual environment ready"
+
+$backendPath = Join-Path $PSScriptRoot "backend"
+$hunyuanRepo = Join-Path $PSScriptRoot "hunyuan3d_repo"
+$trellisRepo = Join-Path $PSScriptRoot "trellis_repo"
+$trellis2Repo = Join-Path $PSScriptRoot "trellis2_repo"
+$triposrRepo = Join-Path $PSScriptRoot "triposr_repo"
+$hy3dDest = Join-Path $backendPath "hy3dgen"
+$trellisDest = Join-Path $backendPath "trellis"
+$trellis2Dest = Join-Path $backendPath "trellis2"
+$backendTsr = Join-Path $backendPath "tsr"
+
+if (-not $SelectedModels["hunyuan"]) { Remove-ModelArtifacts "Hunyuan3D-2 files" @($hunyuanRepo, $hy3dDest) }
+if (-not $SelectedModels["trellis"]) { Remove-ModelArtifacts "TRELLIS files" @($trellisRepo, $trellisDest) }
+if (-not $SelectedModels["trellis2"]) { Remove-ModelArtifacts "TRELLIS.2 files" @($trellis2Repo, $trellis2Dest) }
+if (-not $SelectedModels["triposr"]) { Remove-ModelArtifacts "TripoSR files" @($triposrRepo, $backendTsr) }
 
 # ── PyTorch ────────────────────────────────────────────────────────────────────
 if ($runtimeDevice -eq "cuda") {
@@ -394,54 +499,49 @@ if ($runtimeDevice -eq "cuda") {
 if ($LASTEXITCODE -ne 0) { Fail "Core dependencies failed" }
 OK "Core dependencies installed"
 
-# ── Hunyuan3D-2 ────────────────────────────────────────────────────────────────
-Step "Cloning Hunyuan3D-2 (quality model)"
-$hunyuanRepo = Join-Path $PSScriptRoot "hunyuan3d_repo"
-if (Test-Path -LiteralPath $hunyuanRepo) { Remove-Item -Recurse -Force -LiteralPath $hunyuanRepo }
-git clone --quiet --depth 1 https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git "$hunyuanRepo"
-if (-not (Test-Path -LiteralPath $hunyuanRepo)) { Fail "Failed to clone Hunyuan3D-2" }
-OK "Hunyuan3D-2 cloned"
+if ($SelectedModels["hunyuan"]) {
+    # ── Hunyuan3D-2 ────────────────────────────────────────────────────────────
+    Step "Cloning Hunyuan3D-2 (quality model)"
+    if (Test-Path -LiteralPath $hunyuanRepo) { Remove-Item -Recurse -Force -LiteralPath $hunyuanRepo }
+    git clone --quiet --depth 1 https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git "$hunyuanRepo"
+    if (-not (Test-Path -LiteralPath $hunyuanRepo)) { Fail "Failed to clone Hunyuan3D-2" }
+    OK "Hunyuan3D-2 cloned"
 
-# Show what was cloned
-Info "Repo top-level contents:"
-Get-ChildItem -LiteralPath $hunyuanRepo | ForEach-Object { Info "  $($_.Name)" }
+    Info "Repo top-level contents:"
+    Get-ChildItem -LiteralPath $hunyuanRepo | ForEach-Object { Info "  $($_.Name)" }
 
-# Install Hunyuan3D-2 requirements if present
-$hunyuanReq = Join-Path $hunyuanRepo "requirements.txt"
-if (Test-Path -LiteralPath $hunyuanReq) {
-    & "$PY" -m pip install -r "$hunyuanReq" -q
-    OK "Hunyuan3D-2 requirements installed"
-} else {
-    Warn "No requirements.txt found in repo"
-}
+    $hunyuanReq = Join-Path $hunyuanRepo "requirements.txt"
+    if (Test-Path -LiteralPath $hunyuanReq) {
+        & "$PY" -m pip install -r "$hunyuanReq" -q
+        OK "Hunyuan3D-2 requirements installed"
+    } else {
+        Warn "No requirements.txt found in repo"
+    }
 
-# Find and copy hy3dshape folder
-$backendPath  = Join-Path $PSScriptRoot "backend"
-# The module is called hy3dgen (not hy3dshape)
-$hy3dDest = Join-Path $backendPath "hy3dgen"
-if (Test-Path -LiteralPath $hy3dDest) { Remove-Item -Recurse -Force -LiteralPath $hy3dDest }
+    if (Test-Path -LiteralPath $hy3dDest) { Remove-Item -Recurse -Force -LiteralPath $hy3dDest }
 
-$hy3dSrc = Join-Path $hunyuanRepo "hy3dgen"
-if (Test-Path -LiteralPath $hy3dSrc) {
-    Copy-Item -Recurse -LiteralPath $hy3dSrc -Destination $hy3dDest
-    OK "hy3dgen copied to backend"
-    # Rename hy3dgen/rembg.py to avoid conflict with the real rembg package
-    $conflictFile = Join-Path $hy3dDest "rembg.py"
-    if (Test-Path -LiteralPath $conflictFile) {
-        Rename-Item -LiteralPath $conflictFile -NewName "rembg_hy3d.py"
-        OK "Renamed conflicting rembg.py -> rembg_hy3d.py"
+    $hy3dSrc = Join-Path $hunyuanRepo "hy3dgen"
+    if (Test-Path -LiteralPath $hy3dSrc) {
+        Copy-Item -Recurse -LiteralPath $hy3dSrc -Destination $hy3dDest
+        OK "hy3dgen copied to backend"
+        $conflictFile = Join-Path $hy3dDest "rembg.py"
+        if (Test-Path -LiteralPath $conflictFile) {
+            Rename-Item -LiteralPath $conflictFile -NewName "rembg_hy3d.py"
+            OK "Renamed conflicting rembg.py -> rembg_hy3d.py"
+        }
+    } else {
+        Warn "hy3dgen folder not found"
     }
 } else {
-    Warn "hy3dgen folder not found"
+    Step "Skipping Hunyuan3D-2 (not selected)"
 }
 
 # ── TRELLIS ────────────────────────────────────────────────────────────────────
-if ($runtimeDevice -eq "cuda") {
+if ($SelectedModels["trellis"] -and $runtimeDevice -eq "cuda") {
     Step "Installing TRELLIS (best-quality model)"
     Info "TRELLIS uses open DINOv2 dependencies. TRELLIS.2 can fall back to open DINOv2 if DINOv3 access is unavailable."
 
     # Clone TRELLIS repo
-    $trellisRepo = Join-Path $PSScriptRoot "trellis_repo"
     if (Test-Path -LiteralPath $trellisRepo) { Remove-Item -Recurse -Force -LiteralPath $trellisRepo }
     git clone --quiet --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.git "$trellisRepo"
     if (Test-Path -LiteralPath $trellisRepo) {
@@ -503,7 +603,6 @@ if ($runtimeDevice -eq "cuda") {
 
         # Copy trellis Python package to backend
         $trellisSrc  = Join-Path $trellisRepo "trellis"
-        $trellisDest = Join-Path $backendPath "trellis"
         if (Test-Path -LiteralPath $trellisDest) { Remove-Item -Recurse -Force -LiteralPath $trellisDest }
         if (Test-Path -LiteralPath $trellisSrc) {
             Copy-Item -Recurse -LiteralPath $trellisSrc -Destination $trellisDest
@@ -518,15 +617,16 @@ if ($runtimeDevice -eq "cuda") {
             Warn "TRELLIS trellis/ folder not found in repo"
         }
     }
+} elseif (-not $SelectedModels["trellis"]) {
+    Step "Skipping TRELLIS (not selected)"
 } else {
     Step "Skipping TRELLIS (CUDA/NVIDIA GPU required)"
     Warn "TRELLIS requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
 }
 
 # ── TRELLIS.2 (experimental on Windows) ──────────────────────────────────────
-if ($runtimeDevice -eq "cuda") {
+if ($SelectedModels["trellis2"] -and $runtimeDevice -eq "cuda") {
     Step "Installing TRELLIS.2 (experimental Windows support)"
-    $trellis2Repo = Join-Path $PSScriptRoot "trellis2_repo"
     if (Test-Path -LiteralPath $trellis2Repo) { Remove-Item -Recurse -Force -LiteralPath $trellis2Repo }
     git clone --quiet --depth 1 --recurse-submodules https://github.com/microsoft/TRELLIS.2.git "$trellis2Repo"
     if (Test-Path -LiteralPath $trellis2Repo) {
@@ -624,7 +724,6 @@ if ($runtimeDevice -eq "cuda") {
         }
 
         $trellis2Src  = Join-Path $trellis2Repo "trellis2"
-        $trellis2Dest = Join-Path $backendPath "trellis2"
         if (Test-Path -LiteralPath $trellis2Dest) { Remove-Item -Recurse -Force -LiteralPath $trellis2Dest }
         if (Test-Path -LiteralPath $trellis2Src) {
             Copy-Item -Recurse -LiteralPath $trellis2Src -Destination $trellis2Dest
@@ -641,23 +740,27 @@ if ($runtimeDevice -eq "cuda") {
     } else {
         Warn "Failed to clone TRELLIS.2 repo - skipping TRELLIS.2 integration"
     }
+} elseif (-not $SelectedModels["trellis2"]) {
+    Step "Skipping TRELLIS.2 (not selected)"
+} else {
+    Step "Skipping TRELLIS.2 (CUDA/NVIDIA GPU required)"
+    Warn "TRELLIS.2 requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
 }
 
 # ── TripoSR ────────────────────────────────────────────────────────────────────
-Step "Cloning TripoSR (fast model)"
-$triposrRepo = Join-Path $PSScriptRoot "triposr_repo"
-if (Test-Path -LiteralPath $triposrRepo) { Remove-Item -Recurse -Force -LiteralPath $triposrRepo }
-git clone --quiet --depth 1 https://github.com/VAST-AI-Research/TripoSR.git "$triposrRepo"
-$triposrTsr = Join-Path $triposrRepo "tsr"
-if (-not (Test-Path -LiteralPath $triposrTsr)) { Fail "Failed to clone TripoSR" }
+if ($SelectedModels["triposr"]) {
+    Step "Cloning TripoSR (fast model)"
+    if (Test-Path -LiteralPath $triposrRepo) { Remove-Item -Recurse -Force -LiteralPath $triposrRepo }
+    git clone --quiet --depth 1 https://github.com/VAST-AI-Research/TripoSR.git "$triposrRepo"
+    $triposrTsr = Join-Path $triposrRepo "tsr"
+    if (-not (Test-Path -LiteralPath $triposrTsr)) { Fail "Failed to clone TripoSR" }
 
-$backendTsr = Join-Path $backendPath "tsr"
-if (Test-Path -LiteralPath $backendTsr) { Remove-Item -Recurse -Force -LiteralPath $backendTsr }
-Copy-Item -Recurse -LiteralPath $triposrTsr -Destination $backendTsr
-OK "TripoSR copied"
+    if (Test-Path -LiteralPath $backendTsr) { Remove-Item -Recurse -Force -LiteralPath $backendTsr }
+    Copy-Item -Recurse -LiteralPath $triposrTsr -Destination $backendTsr
+    OK "TripoSR copied"
 
-Info "Patching TripoSR source..."
-& "$PY" -c @"
+    Info "Patching TripoSR source..."
+    & "$PY" -c @"
 import re, ast
 
 p = 'backend/tsr/utils.py'
@@ -683,18 +786,41 @@ if old in txt2:
     open(p2, 'w', encoding='utf-8').write(txt2)
     print('  isosurface.py patched')
 "@
-OK "TripoSR patched"
+    OK "TripoSR patched"
+} else {
+    Step "Skipping TripoSR (not selected)"
+}
 
 # ── Pin NumPy last ─────────────────────────────────────────────────────────────
 Step "Pinning NumPy/OpenCV compatibility"
 & "$PY" -m pip install "numpy==1.26.4" "opencv-python==4.10.0.84" --force-reinstall -q
 OK "NumPy/OpenCV pinned (1.26.4 / 4.10.0.84)"
 
+$modelsConfigPath = Join-Path $PSScriptRoot ".pixform_models.json"
+$selectedModelConfig = [ordered]@{}
+foreach ($name in $AllModelKeys) {
+    $selectedModelConfig[$name] = [bool]$SelectedModels[$name]
+}
+$selectedModelConfig | ConvertTo-Json | Set-Content -LiteralPath $modelsConfigPath -Encoding UTF8
+OK "Saved model selection to .pixform_models.json"
+
 # ── Validate ───────────────────────────────────────────────────────────────────
 Step "Validating installation"
 & "$PY" -c @"
-import sys, pathlib
+import sys, pathlib, json
 sys.path.insert(0, 'backend')
+
+cfg_path = pathlib.Path('.pixform_models.json')
+selected = {k: True for k in ('triposr', 'hunyuan', 'trellis', 'trellis2')}
+if cfg_path.exists():
+    try:
+        data = json.loads(cfg_path.read_text(encoding='utf-8'))
+        if isinstance(data, dict):
+            for key in selected:
+                if key in data:
+                    selected[key] = bool(data[key])
+    except Exception as e:
+        print(f'  model selection config: FAILED - {e}')
 
 import torch
 print(f'  PyTorch {torch.__version__} | CUDA: {torch.cuda.is_available()}')
@@ -706,62 +832,74 @@ print(f'  NumPy {np.__version__}')
 t = torch.tensor(np.zeros((4,4), dtype=np.float32))
 print(f'  numpy->torch: OK {t.shape}')
 
-try:
-    from tsr.system import TSR
-    print('  TripoSR: OK')
-except Exception as e:
-    print(f'  TripoSR: FAILED - {e}')
+if not selected.get('triposr', True):
+    print('  TripoSR: skipped (not selected)')
+else:
+    try:
+        from tsr.system import TSR
+        print('  TripoSR: OK')
+    except Exception as e:
+        print(f'  TripoSR: FAILED - {e}')
 
-try:
-    hy3d = pathlib.Path('backend/hy3dgen')
-    if hy3d.exists():
-        sys.path.insert(0, str(hy3d))
-        print(f'  hy3dgen folder: found ({len(list(hy3d.iterdir()))} items)')
-    else:
-        print('  hy3dgen folder: NOT FOUND')
-except Exception as e:
-    print(f'  hy3dgen: FAILED - {e}')
-
-try:
-    trellis_pkg = pathlib.Path('backend/trellis')
-    if trellis_pkg.exists():
-        import os
-        os.environ.setdefault('ATTN_BACKEND', 'xformers')
-        os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
-        print(f'  TRELLIS package: found ({len(list(trellis_pkg.iterdir()))} items)')
-        try:
-            import spconv
-            import easydict
-            from trellis.pipelines import TrellisImageTo3DPipeline
-            print('[SPARSE] Backend: spconv, Attention: xformers')
-            print('  TRELLIS: OK')
-        except ImportError as ie:
-            print(f'  TRELLIS: FAILED - {ie}')
-    else:
-        print('  TRELLIS package: not found (CUDA-only feature)')
-except Exception as e:
-    print(f'  TRELLIS: FAILED - {e}')
-
-try:
-    trellis2_pkg = pathlib.Path('backend/trellis2')
-    if trellis2_pkg.exists():
-        print(f'  TRELLIS.2 package: found ({len(list(trellis2_pkg.iterdir()))} items)')
-        import importlib.util
-        import os
-        missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
-        if missing:
-            missing_str = ', '.join(missing)
-            print(f'  TRELLIS.2 runtime deps missing: {missing_str} (TRELLIS.2 disabled)')
+if not selected.get('hunyuan', True):
+    print('  Hunyuan3D-2: skipped (not selected)')
+else:
+    try:
+        hy3d = pathlib.Path('backend/hy3dgen')
+        if hy3d.exists():
+            sys.path.insert(0, str(hy3d))
+            print(f'  hy3dgen folder: found ({len(list(hy3d.iterdir()))} items)')
         else:
-            os.environ.setdefault('SPARSE_CONV_BACKEND', 'spconv')
-            os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
+            print('  hy3dgen folder: NOT FOUND')
+    except Exception as e:
+        print(f'  hy3dgen: FAILED - {e}')
+
+if not selected.get('trellis', True):
+    print('  TRELLIS: skipped (not selected)')
+else:
+    try:
+        trellis_pkg = pathlib.Path('backend/trellis')
+        if trellis_pkg.exists():
+            import os
             os.environ.setdefault('ATTN_BACKEND', 'xformers')
-            from trellis2.pipelines import Trellis2ImageTo3DPipeline
-            print('  TRELLIS.2: OK')
-    else:
-        print('  TRELLIS.2 package: not found (optional CUDA feature)')
-except Exception as e:
-    print(f'  TRELLIS.2: FAILED - {e}')
+            os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
+            print(f'  TRELLIS package: found ({len(list(trellis_pkg.iterdir()))} items)')
+            try:
+                import spconv
+                import easydict
+                from trellis.pipelines import TrellisImageTo3DPipeline
+                print('[SPARSE] Backend: spconv, Attention: xformers')
+                print('  TRELLIS: OK')
+            except ImportError as ie:
+                print(f'  TRELLIS: FAILED - {ie}')
+        else:
+            print('  TRELLIS package: not found (CUDA-only feature)')
+    except Exception as e:
+        print(f'  TRELLIS: FAILED - {e}')
+
+if not selected.get('trellis2', True):
+    print('  TRELLIS.2: skipped (not selected)')
+else:
+    try:
+        trellis2_pkg = pathlib.Path('backend/trellis2')
+        if trellis2_pkg.exists():
+            print(f'  TRELLIS.2 package: found ({len(list(trellis2_pkg.iterdir()))} items)')
+            import importlib.util
+            import os
+            missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
+            if missing:
+                missing_str = ', '.join(missing)
+                print(f'  TRELLIS.2 runtime deps missing: {missing_str} (TRELLIS.2 disabled)')
+            else:
+                os.environ.setdefault('SPARSE_CONV_BACKEND', 'spconv')
+                os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
+                os.environ.setdefault('ATTN_BACKEND', 'xformers')
+                from trellis2.pipelines import Trellis2ImageTo3DPipeline
+                print('  TRELLIS.2: OK')
+        else:
+            print('  TRELLIS.2 package: not found (optional CUDA feature)')
+    except Exception as e:
+        print(f'  TRELLIS.2: FAILED - {e}')
 
 try:
     from rembg import remove
