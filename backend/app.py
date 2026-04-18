@@ -1117,7 +1117,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         outputs = await infer_future
         _assert_not_cancelled(job_id)
 
-        upd(job_id, progress=78, message="3D structure generated", stage="mesh_ready")
+        upd(job_id, progress=78, message="Diffusion complete, decoding 3D outputs...", stage="decode")
 
         glb_textured = False
         textured_enabled = str(os.getenv("PIXFORM_TRELLIS_TEXTURED", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -1150,6 +1150,8 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             logger.info("TRELLIS textured GLB disabled by default (set PIXFORM_TRELLIS_TEXTURED=1 to enable)")
         _assert_not_cancelled(job_id)
 
+        upd(job_id, progress=79, message="Converting decoded mesh...", stage="extract_mesh")
+
         def extract_trimesh():
             import trimesh as _trimesh
             m = outputs["mesh"][0]
@@ -1171,7 +1173,28 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
         post_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS_POST_TIMEOUT_SEC", post_default)
         try:
             post_task = loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
-            mesh = await asyncio.wait_for(post_task, timeout=post_timeout) if post_timeout else await post_task
+            post_started = time.time()
+            while not post_task.done():
+                await asyncio.sleep(8)
+                _assert_not_cancelled(job_id)
+                elapsed_post = int(time.time() - post_started)
+                if post_timeout and elapsed_post >= post_timeout:
+                    raise asyncio.TimeoutError
+
+                # Keep status alive if postprocess internals have not updated recently.
+                job = jobs.get(job_id, {})
+                last_update_ts = float(job.get("last_update_ts") or post_started)
+                stale_for = time.time() - last_update_ts
+                if stale_for >= 16:
+                    heartbeat_progress = min(93, 80 + elapsed_post // 30)
+                    upd(
+                        job_id,
+                        progress=int(heartbeat_progress),
+                        message=f"Post-processing [{post_level}]... {elapsed_post}s elapsed",
+                        stage="postprocess",
+                    )
+
+            mesh = await post_task
         except asyncio.TimeoutError:
             logger.warning(f"TRELLIS postprocess timed out after {post_timeout}s; using fast fallback mesh finalize")
             upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
@@ -1216,6 +1239,7 @@ async def run_trellis(job_id: str, image_path: Path, out_dir: Path, settings: di
             poly_count=len(mesh.faces),
         )
 
+        upd(job_id, progress=97, message="Rendering preview image...", stage="preview")
         render_preview(mesh, out_dir / "preview.png")
         _assert_not_cancelled(job_id)
 
