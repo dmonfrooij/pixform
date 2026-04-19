@@ -964,11 +964,16 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
             o3d_mesh.compute_vertex_normals()
 
             pcd = o3d_mesh.sample_points_poisson_disk(number_of_points=poisson_points)
-            pcd.estimate_normals()
-            pcd.orient_normals_consistent_tangent_plane(30)
+            # Normals are inherited from the mesh via compute_vertex_normals(); do NOT
+            # call estimate_normals() here – it discards the correct face-derived normals
+            # and produces random/flipped orientations that make Poisson build a cloud-like
+            # outer envelope around the point cloud instead of a tight surface.
+            if not pcd.has_normals():
+                pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+            pcd.orient_normals_consistent_tangent_plane(100)
 
             poisson_mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-                pcd, depth=poisson_depth, width=0, scale=1.1, linear_fit=False
+                pcd, depth=poisson_depth, width=0, scale=1.05, linear_fit=False
             )
 
             # Trim low-density outlier surface fragments based on quality level
