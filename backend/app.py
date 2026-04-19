@@ -1795,27 +1795,16 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             logger.info("TRELLIS.2 pre-decimated to %s faces", len(raw_mesh.faces))
 
 
-        # ── Post-process TRELLIS.2 mesh (cleanup, smoothing, hole filling) ─────
-        upd(job_id, progress=88, message="Finalizing mesh...")
-        try:
-            import trimesh
-            trimesh.repair.fix_normals(raw_mesh)
-            trimesh.repair.fix_winding(raw_mesh)
-            try:
-                raw_mesh.update_faces(raw_mesh.nondegenerate_faces())
-                raw_mesh.update_faces(raw_mesh.unique_faces())
-                raw_mesh.remove_unreferenced_vertices()
-            except Exception:
-                pass
-            trimesh.repair.fill_holes(raw_mesh)
-        except Exception:
-            pass
-
-        mesh = _apply_input_aspect_correction(raw_mesh, input_profile)
-        bounds = mesh.bounds
-        size = max(bounds[1] - bounds[0])
-        if size > 0:
-            mesh.apply_scale(100.0 / size)
+        # ── Post-process TRELLIS.2 mesh via the shared pipeline ──────────────
+        # This runs the full Poisson reconstruction + hole filling + voxel remesh
+        # fallback, identical to what TripoSR and Hunyuan use.
+        post_level = settings.get("post", "standard")
+        upd(job_id, progress=85, message="Post-processing mesh (Poisson + repair)...")
+        mesh = await loop.run_in_executor(
+            None,
+            lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile, model_key="trellis2"),
+        )
+        _assert_not_cancelled(job_id)
 
         logger.info(f"TRELLIS.2 post-processing complete: {len(mesh.faces):,} faces | watertight: {mesh.is_watertight}")
 
