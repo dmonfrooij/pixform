@@ -1755,6 +1755,23 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         if len(raw_mesh.faces) == 0:
             raise RuntimeError("TRELLIS.2 produced an empty mesh")
 
+        # ── Pre-decimate TRELLIS.2 raw mesh before post-processing ───────────
+        # TRELLIS.2 outputs extremely dense meshes (often 10-20M+ faces).
+        # Decimating down to ~500K faces first keeps post-processing fast
+        # without losing meaningful surface detail.
+        _TRELLIS2_PREDECIM_TARGET = int(os.environ.get("PIXFORM_TRELLIS2_PREDECIM_FACES", "2000000"))
+        if len(raw_mesh.faces) > _TRELLIS2_PREDECIM_TARGET:
+            upd(job_id, progress=79, message=f"Decimating {len(raw_mesh.faces):,} → {_TRELLIS2_PREDECIM_TARGET:,} faces...", stage="predecimate")
+            def _predecimate():
+                ratio = _TRELLIS2_PREDECIM_TARGET / len(raw_mesh.faces)
+                decimated = raw_mesh.simplify_quadric_decimation(face_count=_TRELLIS2_PREDECIM_TARGET)
+                if decimated is None or len(decimated.faces) == 0:
+                    return raw_mesh
+                return decimated
+            raw_mesh = await loop.run_in_executor(None, _predecimate)
+            _assert_not_cancelled(job_id)
+            logger.info("TRELLIS.2 pre-decimated to %s faces", len(raw_mesh.faces))
+
         post_level = settings.get("post", "standard")
         preserve_proportions = bool(settings.get("preserve_proportions", True))
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
