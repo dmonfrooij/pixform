@@ -791,7 +791,7 @@ def _fast_finalize_mesh(mesh, target_profile: Optional[dict] = None):
     return mesh
 
 
-def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[dict] = None):
+def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[dict] = None, model_key: Optional[str] = None):
     """High quality mesh post-processing for 3D printing.
     level: none | light | standard | heavy
     Goal: always produce a 100% watertight, slicer-ready mesh.
@@ -804,6 +804,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     poisson_depth  = {"none": 9, "light": 10, "standard": 11, "heavy": 12}.get(level, 11)
     poisson_points = {"none": 60000, "light": 100000, "standard": 200000, "heavy": 350000}.get(level, 200000)
     use_poisson = level in {"standard", "heavy"}
+    is_trellis2 = model_key == "trellis2"
 
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
@@ -885,11 +886,14 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     if not mesh.is_watertight:
         upd(job_id, progress=96, message="Voxel remesh (closing remaining holes)...")
         try:
-            pitch    = mesh.extents.max() / 128
+            voxel_divisions = 160 if is_trellis2 else 128
+            pitch    = max(float(mesh.extents.max()) / voxel_divisions, 1e-6)
             vox      = mesh.voxelized(pitch=pitch)
             remeshed = vox.marching_cubes
             if remeshed.is_watertight and len(remeshed.faces) > 100:
-                remeshed = trimesh.smoothing.filter_taubin(remeshed, iterations=5)
+                remesh_smooth_iters = 2 if is_trellis2 else 5
+                if remesh_smooth_iters > 0:
+                    remeshed = trimesh.smoothing.filter_taubin(remeshed, iterations=remesh_smooth_iters)
                 mesh = remeshed
                 logger.info(f"Voxel remesh: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
         except Exception as e:
@@ -1606,10 +1610,10 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             raise RuntimeError("TRELLIS.2 produced an empty mesh")
 
         post_level = settings.get("post", "standard")
+        preserve_proportions = bool(settings.get("preserve_proportions", True))
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
-        # TRELLIS.2 fallback meshes can be distorted by silhouette-based aspect correction,
-        # so keep the original proportions for this model path.
-        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, None))
+        target_profile_for_post = None if preserve_proportions else input_profile
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, target_profile_for_post, "trellis2"))
         _assert_not_cancelled(job_id)
 
         # ── Export ─────────────────────────────────────────────────────────────
@@ -1740,6 +1744,7 @@ async def convert(
     resolution: int  = 512,
     steps:      int  = 50,           # hunyuan/trellis diffusion steps
     post:       str  = "standard",   # none | light | standard | heavy
+    preserve_proportions: str = "auto",
 ):
     model = (model or "triposr").lower().strip()
     if model not in {"triposr", "hunyuan", "trellis", "trellis2"}:
@@ -1757,11 +1762,18 @@ async def convert(
     with open(img_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    preserve_raw = (preserve_proportions or "auto").strip().lower()
+    if preserve_raw in {"", "auto"}:
+        preserve_flag = model == "trellis2"
+    else:
+        preserve_flag = preserve_raw == "true"
+
     settings = {
         "remove_bg":  remove_bg.lower() == "true",
         "resolution": _normalize_triposr_resolution(resolution),
         "steps":      max(5, min(1000, steps)),
         "post":       post,
+        "preserve_proportions": preserve_flag,
     }
 
     # Determine which model to use
