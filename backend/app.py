@@ -1607,7 +1607,9 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
 
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
-        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile))
+        # TRELLIS.2 fallback meshes can be distorted by silhouette-based aspect correction,
+        # so keep the original proportions for this model path.
+        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, None))
         _assert_not_cancelled(job_id)
 
         # ── Export ─────────────────────────────────────────────────────────────
