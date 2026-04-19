@@ -60,6 +60,19 @@ trellis2_infer_lock = asyncio.Lock()
 
 VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
 TRIPOSR_RES_LEVELS = [1024, 896, 768, 640, 512, 448, 384, 320, 256, 192, 128]
+TRELLIS2_STAGE_DEFAULTS = {
+    "sparse": {"guidance_strength": 7.5, "guidance_rescale": 0.7, "rescale_t": 5.0},
+    "shape": {"guidance_strength": 7.5, "guidance_rescale": 0.5, "rescale_t": 3.0},
+    "tex": {"guidance_strength": 1.0, "guidance_rescale": 0.0, "rescale_t": 3.0},
+}
+TRELLIS2_STEP_PROFILES = {
+    # Slider=20 -> sparse/shape/tex = 12/20/16
+    "conservative": {"sparse_ratio": 0.60, "tex_ratio": 0.80},
+    # Slider=20 -> sparse/shape/tex = 12/20/20
+    "balanced": {"sparse_ratio": 0.60, "tex_ratio": 1.00},
+    # Slider=20 -> sparse/shape/tex = 16/20/20
+    "aggressive": {"sparse_ratio": 0.80, "tex_ratio": 1.00},
+}
 
 
 def resolve_runtime_device() -> str:
@@ -767,6 +780,60 @@ def _normalize_triposr_resolution(value: int) -> int:
     return min(TRIPOSR_RES_LEVELS, key=lambda x: abs(x - v))
 
 
+def _resolve_trellis2_sampler_profile() -> str:
+    profile = str(os.getenv("PIXFORM_TRELLIS2_SAMPLER_PROFILE", "balanced")).strip().lower()
+    if profile not in TRELLIS2_STEP_PROFILES:
+        return "balanced"
+    return profile
+
+
+def _resolve_trellis2_stage_steps(ui_steps: int) -> tuple[int, int, int]:
+    try:
+        requested = int(ui_steps)
+    except Exception:
+        requested = 20
+    requested = max(8, requested)
+
+    try:
+        stage_max = int(str(os.getenv("PIXFORM_TRELLIS2_MAX_STAGE_STEPS", "50")).strip())
+    except Exception:
+        stage_max = 50
+    stage_max = max(16, min(300, stage_max))
+
+    shape_steps = min(requested, stage_max)
+    profile = TRELLIS2_STEP_PROFILES[_resolve_trellis2_sampler_profile()]
+    sparse_steps = int(round(shape_steps * profile["sparse_ratio"]))
+    tex_steps = int(round(shape_steps * profile["tex_ratio"]))
+    sparse_steps = max(8, min(sparse_steps, stage_max))
+    tex_steps = max(8, min(tex_steps, stage_max))
+    return sparse_steps, shape_steps, tex_steps
+
+
+def _resolve_trellis2_pipeline_type(resolution: int) -> str:
+    try:
+        req_resolution = int(resolution)
+    except Exception:
+        req_resolution = 1024
+    if req_resolution >= 1408:
+        return "1536_cascade"
+    if req_resolution >= 896:
+        return "1024_cascade"
+    return "512"
+
+
+def _build_trellis2_sampler_params(ui_steps: int) -> dict:
+    sparse_steps, shape_steps, tex_steps = _resolve_trellis2_stage_steps(ui_steps)
+    sparse = {"steps": sparse_steps, **TRELLIS2_STAGE_DEFAULTS["sparse"]}
+    shape = {"steps": shape_steps, **TRELLIS2_STAGE_DEFAULTS["shape"]}
+    tex = {"steps": tex_steps, **TRELLIS2_STAGE_DEFAULTS["tex"]}
+    return {
+        "sparse_structure_sampler_params": sparse,
+        "shape_slat_sampler_params": shape,
+        "tex_slat_sampler_params": tex,
+        "_steps_tuple": (sparse_steps, shape_steps, tex_steps),
+    }
+
+
 def _fast_finalize_mesh(mesh, target_profile: Optional[dict] = None):
     """Fast fallback mesh finalize path used when heavy postprocess times out."""
     import trimesh
@@ -805,6 +872,12 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     poisson_points = {"none": 60000, "light": 100000, "standard": 200000, "heavy": 350000}.get(level, 200000)
     use_poisson = level in {"standard", "heavy"}
     is_trellis2 = model_key == "trellis2"
+    if is_trellis2 and level == "light":
+        # TRELLIS.2 Windows fallback tends to produce sparse/open shells; run a lighter
+        # Poisson pass for "light" to close surfaces without the full "standard" cost.
+        use_poisson = True
+        poisson_depth = 10
+        poisson_points = 120000
 
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
@@ -1531,16 +1604,33 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         upd(job_id, progress=25, message="This takes 6 to 12 minutes, please wait...", stage="inference")
 
         loop = asyncio.get_event_loop()
-        steps = settings.get("steps", 50)
+        t2_params = _build_trellis2_sampler_params(int(settings.get("steps", 20)))
+        sparse_steps, shape_steps, tex_steps = t2_params.pop("_steps_tuple")
+        pipeline_type = _resolve_trellis2_pipeline_type(int(settings.get("resolution", 1024)))
+        logger.info(
+            "TRELLIS.2 sampler profile=%s steps(sparse/shape/tex)=%s/%s/%s pipeline=%s",
+            _resolve_trellis2_sampler_profile(),
+            sparse_steps,
+            shape_steps,
+            tex_steps,
+            pipeline_type,
+        )
+
+        # Match official TRELLIS.2 behavior: preprocess once, then run with preprocess_image=False.
+        upd(job_id, progress=28, message="Preparing TRELLIS.2 conditioning image...", stage="preprocess")
+        img = await loop.run_in_executor(None, lambda: models["trellis2"].preprocess_image(img))
+        _assert_not_cancelled(job_id)
 
         def infer():
             with torch.no_grad():
                 return models["trellis2"].run(
                     img,
                     seed=42,
-                    shape_slat_sampler_params={"steps": steps},
-                    tex_slat_sampler_params={"steps": steps},
-                    preprocess_image=True,
+                    sparse_structure_sampler_params=t2_params["sparse_structure_sampler_params"],
+                    shape_slat_sampler_params=t2_params["shape_slat_sampler_params"],
+                    tex_slat_sampler_params=t2_params["tex_slat_sampler_params"],
+                    pipeline_type=pipeline_type,
+                    preprocess_image=False,
                 )
 
         wait_seconds = 0
