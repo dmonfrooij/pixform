@@ -1613,7 +1613,35 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         preserve_proportions = bool(settings.get("preserve_proportions", True))
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
         target_profile_for_post = None if preserve_proportions else input_profile
-        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, target_profile_for_post, "trellis2"))
+        post_default = {"none": 300, "light": 480, "standard": 900, "heavy": 1500}.get(post_level, 900)
+        post_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS2_POST_TIMEOUT_SEC", post_default)
+        try:
+            post_task = loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, target_profile_for_post, "trellis2"))
+            post_started = time.time()
+            while not post_task.done():
+                await asyncio.sleep(8)
+                _assert_not_cancelled(job_id)
+                elapsed_post = int(time.time() - post_started)
+                if post_timeout and elapsed_post >= post_timeout:
+                    raise asyncio.TimeoutError
+
+                job = jobs.get(job_id, {})
+                last_update_ts = float(job.get("last_update_ts") or post_started)
+                stale_for = time.time() - last_update_ts
+                if stale_for >= 16:
+                    heartbeat_progress = min(93, 80 + elapsed_post // 30)
+                    upd(
+                        job_id,
+                        progress=int(heartbeat_progress),
+                        message=f"Post-processing [{post_level}]... {elapsed_post}s elapsed",
+                        stage="postprocess",
+                    )
+
+            mesh = await post_task
+        except asyncio.TimeoutError:
+            logger.warning(f"TRELLIS.2 postprocess timed out after {post_timeout}s; using fast fallback mesh finalize")
+            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
+            mesh = _fast_finalize_mesh(raw_mesh.copy(), target_profile_for_post)
         _assert_not_cancelled(job_id)
 
         # ── Export ─────────────────────────────────────────────────────────────
