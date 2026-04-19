@@ -235,6 +235,58 @@ print("  trellis2 pipelines alias patched")
     return ($exitCode -eq 0)
 }
 
+function Patch-Trellis2ImagePipelineCompat($pythonExe, $targetPath) {
+    if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
+    $patchScript = Join-Path $env:TEMP "pixform_patch_trellis2_image_pipeline.py"
+    @'
+from pathlib import Path
+import ast
+import sys
+
+p = Path(sys.argv[1])
+txt = p.read_text(encoding="utf-8")
+changed = False
+
+if "cond_resolution = max(patch_size, (int(resolution) // patch_size) * patch_size)" not in txt:
+    old = "        self.image_cond_model.image_size = resolution\n"
+    new = (
+        "        # Patch-based backbones (e.g. DINO) require image size divisible by patch size (14).\n"
+        "        patch_size = 14\n"
+        "        cond_resolution = max(patch_size, (int(resolution) // patch_size) * patch_size)\n"
+        "        self.image_cond_model.image_size = cond_resolution\n"
+    )
+    if old in txt:
+        txt = txt.replace(old, new, 1)
+        changed = True
+
+if "Windows fallback path may not have optional native mesh repair extensions." not in txt:
+    old = "            m.fill_holes()\n"
+    new = (
+        "            try:\n"
+        "                m.fill_holes()\n"
+        "            except Exception:\n"
+        "                # Windows fallback path may not have optional native mesh repair extensions.\n"
+        "                pass\n"
+    )
+    if old in txt:
+        txt = txt.replace(old, new, 1)
+        changed = True
+
+if not changed:
+    print("  trellis2 image_to_3d pipeline already patched")
+    raise SystemExit(0)
+
+ast.parse(txt)
+p.write_text(txt, encoding="utf-8")
+print("  trellis2 image_to_3d pipeline patched (patch14 + mesh fallback guards)")
+'@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
+
+    & "$pythonExe" "$patchScript" "$targetPath"
+    $exitCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $patchScript -Force -ErrorAction SilentlyContinue
+    return ($exitCode -eq 0)
+}
+
 function Patch-OVoxelSetupForWindows($targetPath) {
     if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
     $content = @'
@@ -775,6 +827,13 @@ if ($SelectedModels["trellis2"] -and $runtimeDevice -eq "cuda") {
         }
         if (Patch-Trellis2ImageExtractorForOSS "$PY" "$t2IFEPath") {
             OK "TRELLIS.2 image extractor patched (DINOv2 fallback)"
+        }
+        $t2PipelinePath = Join-Path $trellis2Dest "pipelines\trellis2_image_to_3d.py"
+        if (-not (Test-Path -LiteralPath $t2PipelinePath)) {
+            $t2PipelinePath = Join-Path $trellis2Dest "pipelines\trellis_image_to_3d.py"
+        }
+        if (Patch-Trellis2ImagePipelineCompat "$PY" "$t2PipelinePath") {
+            OK "TRELLIS.2 image-to-3D pipeline patched (patch14 + mesh fallback guards)"
         }
     } else {
         Warn "trellis2/ package folder not found in cloned repo - TRELLIS.2 Python package unavailable"
