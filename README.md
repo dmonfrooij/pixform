@@ -453,6 +453,33 @@ Optional tuning via environment variables:
 - `PIXFORM_TRELLIS_TEXTURE_TIMEOUT_SEC` (default `480`)
 - `PIXFORM_TRELLIS_TEXTURED=1` to enable textured GLB attempt (default is off)
 
+### 7. TRELLIS.2 fails with "gated repo" or "401 Unauthorized"
+
+TRELLIS.2 uses `facebook/dinov3-vitl16-pretrain-lvd1689m` as its image encoder. This model is hosted as a restricted download on HuggingFace. You only need to deal with this **once** — after the one-time download it runs fully locally with no internet or authentication required.
+
+#### One-time download
+
+1. Go to https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m and click **Request access** (approved within minutes)
+2. Create a token at https://huggingface.co/settings/tokens
+3. Run the included download script:
+
+   ```powershell
+   # Windows PowerShell
+   $env:HF_TOKEN = 'hf_your_token_here'
+   .\venv\Scripts\python.exe download_dinov3.py
+   ```
+
+   ```bash
+   # macOS
+   HF_TOKEN=hf_your_token_here ./venv/bin/python download_dinov3.py
+   ```
+
+4. The model is saved to `backend/models/dinov3_vitl16/`
+
+**After this, start PIXFORM normally — no token, no internet, runs fully offline.**
+
+> The download is ~1 GB and happens only once. The script tells you exactly what to do if something goes wrong.
+
 ---
 
 ## Project Structure
@@ -471,6 +498,7 @@ pixform/
 |   `-- index.html        # web interface
 |-- install.ps1           # Windows installer
 |-- install_mac.sh        # macOS installer
+|-- download_dinov3.py    # one-time DINOv3 encoder download for TRELLIS.2 (run once, then fully offline)
 |-- PIXFORM.bat           # Windows launcher
 |-- PIXFORM.sh            # macOS launcher
 |-- pixform.iss           # Inno Setup script
@@ -503,6 +531,9 @@ General process:
 - Better TRELLIS dependency validation
 - Clearer error messages in `/health` endpoint
 - Updated README with complete setup instructions
+- Added TRELLIS.2 support (`trellis2` model)
+- Added `download_dinov3.py` for one-time offline setup of the DINOv3 encoder required by TRELLIS.2
+- TRELLIS.2 DINOv3 encoder now auto-detected from `backend/models/dinov3_vitl16/` — fully offline after first download
 
 ---
 

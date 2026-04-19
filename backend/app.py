@@ -140,10 +140,15 @@ def _format_model_load_error(model_name: str, exc: Exception) -> str:
     raw = str(exc)
     low = raw.lower()
     if _is_hf_auth_error_text(low):
+        dinov3_hint = ""
+        if "dinov3" in low or "facebook/dinov3" in low:
+            dinov3_hint = (
+                " TRELLIS.2 requires 'facebook/dinov3-vitl16-pretrain-lvd1689m' (gated HuggingFace model). "
+                "Run 'download_dinov3.py' once to save it locally - after that TRELLIS.2 runs fully offline. "
+                "See README section 7 or run: python download_dinov3.py"
+            )
         return (
-            f"{model_name} could not access a gated model dependency. "
-            "Configure a local model path (no authentication needed at runtime) or provide "
-            "valid access for the configured Hugging Face repo."
+            f"{model_name} could not access a gated model dependency.{dinov3_hint}"
         )
     if "no attribute flexidualgridvaedecoder" in low or "no attribute sparseunetvaedecoder" in low:
         return (
