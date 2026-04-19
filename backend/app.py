@@ -56,6 +56,7 @@ model_health = {
     "rembg":    {"status": "pending", "error": None},
 }
 jobs: dict = {}
+trellis2_infer_lock = asyncio.Lock()
 
 VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
 TRIPOSR_RES_LEVELS = [1024, 896, 768, 640, 512, 448, 384, 320, 256, 192, 128]
@@ -1538,8 +1539,22 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
                     preprocess_image=True,
                 )
 
-        upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...", stage="inference")
-        outputs = await loop.run_in_executor(None, infer)
+        wait_seconds = 0
+        while trellis2_infer_lock.locked():
+            _assert_not_cancelled(job_id)
+            wait_seconds += 2
+            upd(
+                job_id,
+                progress=30,
+                message=f"Another TRELLIS.2 job is running; queued ({wait_seconds}s)...",
+                stage="queue",
+            )
+            await asyncio.sleep(2)
+
+        async with trellis2_infer_lock:
+            _assert_not_cancelled(job_id)
+            upd(job_id, progress=30, message="Running TRELLIS.2 diffusion model...", stage="inference")
+            outputs = await loop.run_in_executor(None, infer)
         _assert_not_cancelled(job_id)
 
         upd(job_id, progress=78, message="3D structure generated", stage="mesh_ready")
