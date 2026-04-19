@@ -60,6 +60,7 @@ trellis2_infer_lock = asyncio.Lock()
 
 VALID_POST_LEVELS = {"none", "light", "standard", "heavy"}
 TRIPOSR_RES_LEVELS = [1024, 896, 768, 640, 512, 448, 384, 320, 256, 192, 128]
+TRELLIS2_RES_LEVELS = [512, 1024, 1536]
 TRELLIS2_STAGE_DEFAULTS = {
     "sparse": {"guidance_strength": 7.5, "guidance_rescale": 0.7, "rescale_t": 5.0},
     "shape": {"guidance_strength": 7.5, "guidance_rescale": 0.5, "rescale_t": 3.0},
@@ -770,6 +771,32 @@ def remove_background(img, job_id):
         return img.convert("RGBA")
 
 
+def _image_has_meaningful_alpha(img) -> bool:
+    """True when the image already carries a usable foreground alpha mask."""
+    try:
+        if img is None or "A" not in img.getbands():
+            return False
+        alpha = np.asarray(img.getchannel("A"), dtype=np.uint8)
+        return bool(alpha.size) and int(alpha.max()) > 0 and int(alpha.min()) < 250
+    except Exception:
+        return False
+
+
+def _resolve_trellis2_seed(settings: dict) -> int:
+    """Mirror official app behavior: randomize by default, allow fixed override for debugging."""
+    max_seed = (1 << 31) - 1
+
+    for raw in (settings.get("seed"), os.getenv("PIXFORM_TRELLIS2_FIXED_SEED", "")):
+        if raw in (None, ""):
+            continue
+        try:
+            return max(0, min(int(raw), max_seed))
+        except Exception:
+            continue
+
+    return int.from_bytes(os.urandom(4), "big") & max_seed
+
+
 def _normalize_triposr_resolution(value: int) -> int:
     """Snap requested resolution to the closest supported TripoSR extraction level."""
     try:
@@ -780,6 +807,33 @@ def _normalize_triposr_resolution(value: int) -> int:
     return min(TRIPOSR_RES_LEVELS, key=lambda x: abs(x - v))
 
 
+def _normalize_trellis2_resolution(value: int) -> int:
+    """Snap TRELLIS.2 resolution to supported pipelines: 512, 1024, 1536."""
+    try:
+        v = int(value)
+    except Exception:
+        return 1024
+    v = max(512, min(1536, v))
+    return min(TRELLIS2_RES_LEVELS, key=lambda x: abs(x - v))
+
+
+def _resolve_trellis2_steps_cap() -> int:
+    """Default cap is official-like (50), with optional env override for expert tuning."""
+    try:
+        cap = int(str(os.getenv("PIXFORM_TRELLIS2_MAX_STAGE_STEPS", "50")).strip())
+    except Exception:
+        cap = 50
+    return max(8, min(cap, 300))
+
+
+def _normalize_trellis2_steps(value: int) -> int:
+    try:
+        v = int(value)
+    except Exception:
+        v = 36
+    return max(8, min(v, _resolve_trellis2_steps_cap()))
+
+
 def _resolve_trellis2_sampler_profile() -> str:
     profile = str(os.getenv("PIXFORM_TRELLIS2_SAMPLER_PROFILE", "balanced")).strip().lower()
     if profile not in TRELLIS2_STEP_PROFILES:
@@ -788,17 +842,8 @@ def _resolve_trellis2_sampler_profile() -> str:
 
 
 def _resolve_trellis2_stage_steps(ui_steps: int) -> tuple[int, int, int]:
-    try:
-        requested = int(ui_steps)
-    except Exception:
-        requested = 20
-    requested = max(8, requested)
-
-    try:
-        stage_max = int(str(os.getenv("PIXFORM_TRELLIS2_MAX_STAGE_STEPS", "50")).strip())
-    except Exception:
-        stage_max = 50
-    stage_max = max(16, min(300, stage_max))
+    requested = _normalize_trellis2_steps(ui_steps)
+    stage_max = _resolve_trellis2_steps_cap()
 
     shape_steps = min(requested, stage_max)
     profile = TRELLIS2_STEP_PROFILES[_resolve_trellis2_sampler_profile()]
@@ -810,13 +855,10 @@ def _resolve_trellis2_stage_steps(ui_steps: int) -> tuple[int, int, int]:
 
 
 def _resolve_trellis2_pipeline_type(resolution: int) -> str:
-    try:
-        req_resolution = int(resolution)
-    except Exception:
-        req_resolution = 1024
-    if req_resolution >= 1408:
+    req_resolution = _normalize_trellis2_resolution(resolution)
+    if req_resolution == 1536:
         return "1536_cascade"
-    if req_resolution >= 896:
+    if req_resolution == 1024:
         return "1024_cascade"
     return "512"
 
@@ -1591,12 +1633,16 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         img = Image.open(image_path).convert("RGBA")
         _assert_not_cancelled(job_id)
 
-        # Background removal (trellis2 honours RGBA alpha - no double-processing)
+        # TRELLIS.2 works best with a clean RGBA foreground; preserve existing alpha instead of re-matting it.
+        input_has_alpha_mask = _image_has_meaningful_alpha(img)
         if settings.get("remove_bg", True):
-            upd(job_id, progress=10, message="Removing background...", stage="remove_background")
-            loop = asyncio.get_event_loop()
-            img = await loop.run_in_executor(None, remove_background, img, job_id)
-            _assert_not_cancelled(job_id)
+            if input_has_alpha_mask:
+                upd(job_id, progress=10, message="Using embedded alpha mask...", stage="remove_background")
+            else:
+                upd(job_id, progress=10, message="Removing background...", stage="remove_background")
+                loop = asyncio.get_event_loop()
+                img = await loop.run_in_executor(None, remove_background, img, job_id)
+                _assert_not_cancelled(job_id)
 
         input_profile = _foreground_profile(img)
 
@@ -1604,16 +1650,21 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         upd(job_id, progress=25, message="This takes 6 to 12 minutes, please wait...", stage="inference")
 
         loop = asyncio.get_event_loop()
-        t2_params = _build_trellis2_sampler_params(int(settings.get("steps", 20)))
+        t2_params = _build_trellis2_sampler_params(int(settings.get("steps", 36)))
         sparse_steps, shape_steps, tex_steps = t2_params.pop("_steps_tuple")
-        pipeline_type = _resolve_trellis2_pipeline_type(int(settings.get("resolution", 1024)))
+        req_resolution = _normalize_trellis2_resolution(int(settings.get("resolution", 1024)))
+        pipeline_type = _resolve_trellis2_pipeline_type(req_resolution)
+        seed = _resolve_trellis2_seed(settings)
         logger.info(
-            "TRELLIS.2 sampler profile=%s steps(sparse/shape/tex)=%s/%s/%s pipeline=%s",
+            "TRELLIS.2 seed=%s sampler profile=%s steps(sparse/shape/tex)=%s/%s/%s resolution=%s pipeline=%s alpha_mask=%s",
+            seed,
             _resolve_trellis2_sampler_profile(),
             sparse_steps,
             shape_steps,
             tex_steps,
+            req_resolution,
             pipeline_type,
+            input_has_alpha_mask,
         )
 
         # Match official TRELLIS.2 behavior: preprocess once, then run with preprocess_image=False.
@@ -1625,7 +1676,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
             with torch.no_grad():
                 return models["trellis2"].run(
                     img,
-                    seed=42,
+                    seed=seed,
                     sparse_structure_sampler_params=t2_params["sparse_structure_sampler_params"],
                     shape_slat_sampler_params=t2_params["shape_slat_sampler_params"],
                     tex_slat_sampler_params=t2_params["tex_slat_sampler_params"],
@@ -1886,10 +1937,16 @@ async def convert(
     else:
         preserve_flag = preserve_raw == "true"
 
+    normalized_resolution = _normalize_triposr_resolution(resolution)
+    normalized_steps = max(5, min(1000, steps))
+    if model == "trellis2":
+        normalized_resolution = _normalize_trellis2_resolution(resolution)
+        normalized_steps = _normalize_trellis2_steps(steps)
+
     settings = {
         "remove_bg":  remove_bg.lower() == "true",
-        "resolution": _normalize_triposr_resolution(resolution),
-        "steps":      max(5, min(1000, steps)),
+        "resolution": normalized_resolution,
+        "steps":      normalized_steps,
         "post":       post,
         "preserve_proportions": preserve_flag,
     }
