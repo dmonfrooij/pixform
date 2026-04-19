@@ -2,11 +2,12 @@
 
 PIXFORM converts a single image into a local 3D model with focus on maximum output quality, usable exports, and easy local installation.
 
-Three generation modes are available in this repository:
+Four generation modes are available in this repository:
 
 - **TripoSR** - fastest option, works on `cuda`, `mps` and `cpu`
 - **Hunyuan3D-2** - higher shape quality, currently only on `cuda`
 - **TRELLIS** - highest quality, with GLB export and textured GLB where possible, only on `cuda`
+- **TRELLIS.2** - next-generation TRELLIS variant with improved geometry and texture, only on `cuda`
 
 **Export formats:** `STL`, `3MF`, `GLB`, `OBJ`
 
@@ -80,6 +81,7 @@ For CUDA profiles (`-Profile nvidia`) additional requirements apply:
 | TripoSR | Quick testing, previews, broader compatibility | CUDA / MPS / CPU | Loads as primary general fallback |
 | Hunyuan3D-2 | Better geometry than TripoSR | CUDA | Only loaded if runtime device is `cuda` |
 | TRELLIS | Highest quality | CUDA | Attempts textured GLB; otherwise falls back to plain GLB |
+| TRELLIS.2 | Next-gen quality with improved geometry and texture | CUDA | Uses `trellis2` runtime; requires `trellis2` install selection |
 
 The backend chooses the runtime device via `PIXFORM_DEVICE` with safe fallback logic.
 
@@ -303,10 +305,11 @@ The job card now also shows a stage heartbeat (`stage` + last update age), so yo
 The backend has these routes for this:
 
 - `GET /health` - model status, device info
-- `POST /convert` - submit image for 3D generation
+- `POST /convert` - submit image for 3D generation (model: `triposr`, `hunyuan`, `trellis`, `trellis2`)
 - `GET /status/{job_id}` - poll job status
 - `POST /jobs/{job_id}/cancel` - request safe cancellation
 - `DELETE /jobs/{job_id}` - cancel/delete job
+- `POST /jobs/cleanup` - prune old completed jobs (`?all=true` to force cleanup of all terminal jobs)
 
 ---
 
@@ -351,6 +354,7 @@ Practical choice per situation:
 - **Quick testing** -> TripoSR + Draft/Low/Medium
 - **Good mesh quality** -> Hunyuan3D-2 + High/Ultra
 - **Best possible quality** -> TRELLIS + High/Ultra/Extreme
+- **Next-gen quality** -> TRELLIS.2 + High/Ultra/Extreme (CUDA only, requires trellis2 install)
 
 ---
 
@@ -393,9 +397,11 @@ The `GET /health` endpoint returns, among others:
 - whether `triposr` is loaded
 - whether `hunyuan` is loaded
 - whether `trellis` is loaded
+- whether `trellis2` is loaded
 - whether `rembg` is active
 - whether `cuda` or `mps` is available
 - which runtime device is actually used
+- per-model `*_status` and `*_error` fields (e.g. `trellis2_status`, `trellis2_error`)
 
 This is useful if a CUDA-only model is not selectable or doesn't load correctly at startup.
 
@@ -459,7 +465,8 @@ pixform/
 |   |-- uploads/          # uploaded source images
 |   |-- tsr/              # TripoSR runtime files
 |   |-- hy3dgen/          # Hunyuan3D runtime files
-|   `-- trellis/          # TRELLIS runtime files (after CUDA install)
+|   |-- trellis/          # TRELLIS runtime files (after CUDA install)
+|   `-- trellis2/         # TRELLIS.2 runtime files (after CUDA install with trellis2 selected)
 |-- frontend/
 |   `-- index.html        # web interface
 |-- install.ps1           # Windows installer
@@ -470,6 +477,7 @@ pixform/
 |-- triposr_repo/         # cloned source during/after install
 |-- hunyuan3d_repo/       # cloned source during/after install
 |-- trellis_repo/         # cloned source during/after CUDA install
+|-- trellis2_official_repo/ # cloned source during/after CUDA install with trellis2
 `-- README.md
 ```
 

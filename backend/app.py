@@ -1908,7 +1908,7 @@ async def health():
 async def convert(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    model:      str  = "triposr",    # triposr | hunyuan | trellis
+    model:      str  = "triposr",    # triposr | hunyuan | trellis | trellis2
     remove_bg:  str  = "true",
     resolution: int  = 512,
     steps:      int  = 50,           # hunyuan/trellis diffusion steps
