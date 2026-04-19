@@ -929,10 +929,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
 
-    # ÔöÇÔöÇ 1. Keep largest component ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-    components = mesh.split(only_watertight=False)
-    if components:
-        mesh = max(components, key=lambda c: len(c.faces))
+    # ÔöÇÔöÇ 1. Keep largest component ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
     # ÔöÇÔöÇ 2. Basic repair ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     trimesh.repair.fix_normals(mesh)
@@ -944,7 +941,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     except Exception:
         pass
 
-    # ÔöÇÔöÇ 3. Smoothing ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ 3. Smoothing ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     if smooth_iters > 0:
         upd(job_id, progress=89, message="Smoothing mesh...")
         try:
@@ -1019,7 +1016,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
         except Exception as e:
             logger.warning(f"Voxel remesh failed: {e}")
 
-    # ÔöÇÔöÇ 7. Final cleanup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ 7. Final cleanup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     try:
         mesh.update_faces(mesh.nondegenerate_faces())
         mesh.update_faces(mesh.unique_faces())
@@ -1031,7 +1028,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     # ÔöÇÔöÇ 8. Match final proportions to the input image silhouette ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     mesh = _apply_input_aspect_correction(mesh, target_profile)
 
-    # ÔöÇÔöÇ 9. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ 9. Scale to 100mm ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     bounds = mesh.bounds
     size = max(bounds[1] - bounds[0])
     if size > 0:
@@ -1193,7 +1190,7 @@ def render_preview(mesh, path: Path):
     except Exception:
         pass
 
-    # ÔöÇÔöÇ Fallback: PIL placeholder ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ÔöÇÔöÇ Fallback: PIL placeholder ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     try:
         img = _Img.new("RGB", (800, 800), (20, 20, 26))
         d = _Draw.Draw(img)
@@ -1204,7 +1201,7 @@ def render_preview(mesh, path: Path):
         pass
 
 
-# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ TripoSR pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -1312,7 +1309,7 @@ async def run_triposr(job_id: str, image_path: Path, out_dir: Path, settings: di
         _finalize_job_resources(job_id)
 
 
-# ÔöÇÔöÇ Hunyuan3D-2 pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ Hunyuan3D-2 pipeline ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     try:
@@ -1741,71 +1738,81 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         _assert_not_cancelled(job_id)
 
         # ── Extract trimesh for STL / 3MF / OBJ (and plain GLB fallback) ─────
+        upd(job_id, progress=79, message="Extracting mesh from TRELLIS.2 output...", stage="extract_mesh")
+
         def extract_trimesh():
             import trimesh as _trimesh
-            return _trimesh.Trimesh(
-                vertices=m.vertices.cpu().numpy(),
-                faces=m.faces.cpu().numpy(),
-                process=True,
-            )
+            import numpy as _np
+            # process=False: skip slow auto-repair/dedup on raw dense mesh;
+            # postprocess_mesh handles cleanup later.
+            verts = m.vertices.cpu().numpy() if hasattr(m.vertices, 'cpu') else _np.array(m.vertices)
+            faces = m.faces.cpu().numpy() if hasattr(m.faces, 'cpu') else _np.array(m.faces)
+            return _trimesh.Trimesh(vertices=verts, faces=faces, process=False)
 
         raw_mesh = await loop.run_in_executor(None, extract_trimesh)
         _assert_not_cancelled(job_id)
+        logger.info("TRELLIS.2 raw mesh: %s faces", len(raw_mesh.faces))
 
         if len(raw_mesh.faces) == 0:
             raise RuntimeError("TRELLIS.2 produced an empty mesh")
 
         # ── Pre-decimate TRELLIS.2 raw mesh before post-processing ───────────
-        # TRELLIS.2 outputs extremely dense meshes (often 10-20M+ faces).
-        # Decimating down to ~500K faces first keeps post-processing fast
-        # without losing meaningful surface detail.
-        _TRELLIS2_PREDECIM_TARGET = int(os.environ.get("PIXFORM_TRELLIS2_PREDECIM_FACES", "2000000"))
+        # Target scales with post level: less post = fewer faces needed.
+        _post_level_now = settings.get("post", "standard")
+        _predecim_defaults = {"none": 300_000, "light": 600_000, "standard": 1_500_000, "heavy": 2_000_000}
+        _TRELLIS2_PREDECIM_TARGET = int(os.environ.get(
+            "PIXFORM_TRELLIS2_PREDECIM_FACES",
+            str(_predecim_defaults.get(_post_level_now, 1_000_000))
+        ))
         if len(raw_mesh.faces) > _TRELLIS2_PREDECIM_TARGET:
-            upd(job_id, progress=79, message=f"Decimating {len(raw_mesh.faces):,} → {_TRELLIS2_PREDECIM_TARGET:,} faces...", stage="predecimate")
+            upd(job_id, progress=80, message=f"Decimating {len(raw_mesh.faces):,} → {_TRELLIS2_PREDECIM_TARGET:,} faces...", stage="predecimate")
+            logger.info("TRELLIS.2 pre-decimating %s → %s faces (post=%s)...", len(raw_mesh.faces), _TRELLIS2_PREDECIM_TARGET, _post_level_now)
             def _predecimate():
-                ratio = _TRELLIS2_PREDECIM_TARGET / len(raw_mesh.faces)
-                decimated = raw_mesh.simplify_quadric_decimation(face_count=_TRELLIS2_PREDECIM_TARGET)
-                if decimated is None or len(decimated.faces) == 0:
+                try:
+                    import open3d as o3d
+                    import numpy as _np
+                    o3d_mesh = o3d.geometry.TriangleMesh()
+                    o3d_mesh.vertices = o3d.utility.Vector3dVector(_np.array(raw_mesh.vertices, dtype=_np.float64))
+                    o3d_mesh.triangles = o3d.utility.Vector3iVector(_np.array(raw_mesh.faces, dtype=_np.int32))
+                    decimated_o3d = o3d_mesh.simplify_quadric_decimation(target_number_of_triangles=_TRELLIS2_PREDECIM_TARGET)
+                    import trimesh as _trimesh
+                    result = _trimesh.Trimesh(
+                        vertices=_np.asarray(decimated_o3d.vertices),
+                        faces=_np.asarray(decimated_o3d.triangles),
+                        process=False,
+                    )
+                    return result if len(result.faces) > 0 else raw_mesh
+                except Exception as e:
+                    logger.warning(f"TRELLIS.2 pre-decimation failed ({e}), using raw mesh")
                     return raw_mesh
-                return decimated
             raw_mesh = await loop.run_in_executor(None, _predecimate)
             _assert_not_cancelled(job_id)
             logger.info("TRELLIS.2 pre-decimated to %s faces", len(raw_mesh.faces))
 
-        post_level = settings.get("post", "standard")
-        preserve_proportions = bool(settings.get("preserve_proportions", True))
-        upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
-        target_profile_for_post = None if preserve_proportions else input_profile
-        post_default = {"none": 300, "light": 480, "standard": 900, "heavy": 1500}.get(post_level, 900)
-        post_timeout = _resolve_timeout_seconds("PIXFORM_TRELLIS2_POST_TIMEOUT_SEC", post_default)
+
+        # ── Post-process TRELLIS.2 mesh (cleanup, smoothing, hole filling) ─────
+        upd(job_id, progress=88, message="Finalizing mesh...")
         try:
-            post_task = loop.run_in_executor(None, lambda: postprocess_mesh(raw_mesh, job_id, post_level, target_profile_for_post, "trellis2"))
-            post_started = time.time()
-            while not post_task.done():
-                await asyncio.sleep(8)
-                _assert_not_cancelled(job_id)
-                elapsed_post = int(time.time() - post_started)
-                if post_timeout and elapsed_post >= post_timeout:
-                    raise asyncio.TimeoutError
+            import trimesh
+            trimesh.repair.fix_normals(raw_mesh)
+            trimesh.repair.fix_winding(raw_mesh)
+            try:
+                raw_mesh.update_faces(raw_mesh.nondegenerate_faces())
+                raw_mesh.update_faces(raw_mesh.unique_faces())
+                raw_mesh.remove_unreferenced_vertices()
+            except Exception:
+                pass
+            trimesh.repair.fill_holes(raw_mesh)
+        except Exception:
+            pass
 
-                job = jobs.get(job_id, {})
-                last_update_ts = float(job.get("last_update_ts") or post_started)
-                stale_for = time.time() - last_update_ts
-                if stale_for >= 16:
-                    heartbeat_progress = min(93, 80 + elapsed_post // 30)
-                    upd(
-                        job_id,
-                        progress=int(heartbeat_progress),
-                        message=f"Post-processing [{post_level}]... {elapsed_post}s elapsed",
-                        stage="postprocess",
-                    )
+        mesh = _apply_input_aspect_correction(raw_mesh, input_profile)
+        bounds = mesh.bounds
+        size = max(bounds[1] - bounds[0])
+        if size > 0:
+            mesh.apply_scale(100.0 / size)
 
-            mesh = await post_task
-        except asyncio.TimeoutError:
-            logger.warning(f"TRELLIS.2 postprocess timed out after {post_timeout}s; using fast fallback mesh finalize")
-            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
-            mesh = _fast_finalize_mesh(raw_mesh.copy(), target_profile_for_post)
-        _assert_not_cancelled(job_id)
+        logger.info(f"TRELLIS.2 post-processing complete: {len(mesh.faces):,} faces | watertight: {mesh.is_watertight}")
 
         # ── Export ─────────────────────────────────────────────────────────────
         upd(job_id, progress=95, message="Exporting files...", stage="export")
@@ -1869,7 +1876,7 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         _finalize_job_resources(job_id)
 
 
-# ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
     import trimesh
@@ -1887,8 +1894,7 @@ async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict)
         stage="done")
 
 
-# ÔöÇÔöÇ Routes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
-
+# ÔöÇÔöÇ Routes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 @app.get("/health")
 async def health():
     import torch
