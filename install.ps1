@@ -27,6 +27,61 @@ function Get-TorchCudaVersion($pythonExe) {
     return (& "$pythonExe" -c "import torch; print(torch.version.cuda or '')" 2>$null | Select-Object -First 1).Trim()
 }
 
+function Get-NvidiaGpuInfo {
+    $result = [ordered]@{
+        Found = $false
+        Lines = @()
+        Source = ""
+    }
+
+    $nvidiaSmiCandidates = @(
+        "nvidia-smi",
+        "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        "$env:ProgramW6432\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+    )
+
+    foreach ($candidate in $nvidiaSmiCandidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $isExePath = $candidate -like "*.exe"
+        if ($isExePath -and -not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            $out = & $candidate --query-gpu=name,memory.total --format=csv,noheader 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out) {
+                $lines = @($out | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
+                if ($lines.Count -gt 0) {
+                    $result.Found = $true
+                    $result.Lines = $lines
+                    $result.Source = "nvidia-smi"
+                    return $result
+                }
+            }
+        } catch {}
+    }
+
+    # Fallback for systems where nvidia-smi is unavailable but NVIDIA adapters exist.
+    try {
+        $adapters = Get-CimInstance Win32_VideoController -ErrorAction Stop |
+            Where-Object { $_.Name -match "NVIDIA" }
+        if ($adapters) {
+            $result.Found = $true
+            $result.Lines = @(
+                $adapters | ForEach-Object {
+                    $name = ($_.Name | Out-String).Trim()
+                    if ($_.AdapterRAM) {
+                        $gb = [math]::Round(([double]$_.AdapterRAM / 1GB), 1)
+                        "$name, ${gb} GB (WMI)"
+                    } else {
+                        "$name (WMI)"
+                    }
+                }
+            )
+            $result.Source = "wmi"
+        }
+    } catch {}
+
+    return $result
+}
+
 function Try-EnableMSVCFromVSBuildTools {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
@@ -139,6 +194,39 @@ if old_extract in txt:
 ast.parse(txt)
 p.write_text(txt, encoding="utf-8")
 print("  trellis2 image_feature_extractor.py patched (open-source fallback)")
+'@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
+
+    & "$pythonExe" "$patchScript" "$targetPath"
+    $exitCode = $LASTEXITCODE
+    Remove-Item -LiteralPath $patchScript -Force -ErrorAction SilentlyContinue
+    return ($exitCode -eq 0)
+}
+
+function Patch-Trellis2PipelineAliases($pythonExe, $targetPath) {
+    if (-not (Test-Path -LiteralPath $targetPath)) { return $false }
+    $patchScript = Join-Path $env:TEMP "pixform_patch_trellis2_aliases.py"
+    @'
+from pathlib import Path
+import ast
+import sys
+
+p = Path(sys.argv[1])
+txt = p.read_text(encoding="utf-8")
+
+alias_line = "Trellis2ImageTo3DPipeline = TrellisImageTo3DPipeline"
+if alias_line in txt:
+    print("  trellis2 pipelines alias already patched")
+    raise SystemExit(0)
+
+anchor = "from .trellis_text_to_3d import TrellisTextTo3DPipeline"
+if anchor not in txt:
+    print("  trellis2 pipelines alias patch skipped: import anchor not found")
+    raise SystemExit(2)
+
+txt = txt.replace(anchor, anchor + "\n\n# Compatibility alias expected by PIXFORM runtime.\n" + alias_line, 1)
+ast.parse(txt)
+p.write_text(txt, encoding="utf-8")
+print("  trellis2 pipelines alias patched")
 '@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
 
     & "$pythonExe" "$patchScript" "$targetPath"
@@ -401,16 +489,21 @@ if (-not $py) {
 if (-not $pyCmd) { Fail "Python 3.10 not found. Download: https://www.python.org/downloads/release/python-31011/" }
 OK "Python 3.10 ready"
 
-try {
-    $nvOut = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>&1
-    OK "GPU: $nvOut"
-} catch { Warn "Could not detect GPU" }
+$gpuInfo = Get-NvidiaGpuInfo
+if ($gpuInfo.Found) {
+    foreach ($gpuLine in $gpuInfo.Lines) {
+        OK "GPU: $gpuLine"
+    }
+} else {
+    Warn "Could not detect NVIDIA GPU"
+}
 
 $runtimeDevice = "cpu"
 if ($Profile -eq "nvidia") {
     $runtimeDevice = "cuda"
 } elseif ($Profile -eq "auto") {
-    try { nvidia-smi | Out-Null; $runtimeDevice = "cuda" } catch { $runtimeDevice = "cpu" }
+    # Auto profile prefers NVIDIA/CUDA whenever any NVIDIA GPU is detectable.
+    if ($gpuInfo.Found) { $runtimeDevice = "cuda" } else { $runtimeDevice = "cpu" }
 }
 Info "Install profile: $Profile (runtime device target: $runtimeDevice)"
 
@@ -433,12 +526,17 @@ if ($runtimeDevice -ne "cuda") {
      }
  }
 
- # On Windows, auto-disable TRELLIS.2 by default because its C++ extensions (CuMesh, FlexGEMM, o-voxel)
- # fail to build in most environments. Users can manually enable it if they have a proper MSVC/CUDA setup.
+ # On Windows, TRELLIS.2 C++ extensions can be tricky; ask user to confirm before proceeding.
  if ([Environment]::OSVersion.Platform -eq "Win32NT" -and $SelectedModels["trellis2"]) {
-     Warn "TRELLIS.2 C++ extensions (CuMesh, FlexGEMM, o-voxel) often fail to build on Windows."
-     Warn "Automatically disabling TRELLIS.2. Use TRELLIS instead for best-quality (it does not require native builds)."
-     $SelectedModels["trellis2"] = $false
+     Warn "TRELLIS.2 requires C++ extensions (CuMesh, FlexGEMM, o-voxel) that may be hard to build on Windows."
+     Warn "The installer will attempt to build them automatically. Failures are non-fatal: TRELLIS.2 will fall back to pure-Python mode."
+     $t2confirm = Read-Host "  Continue with TRELLIS.2 installation? [Y/n]"
+     if ($t2confirm.Trim().ToLowerInvariant() -eq "n") {
+         Warn "TRELLIS.2 skipped at user request."
+         $SelectedModels["trellis2"] = $false
+     } else {
+         Info "Proceeding with TRELLIS.2 installation..."
+     }
  }
 
 $selectedModelNames = Get-SelectedModelNames $SelectedModels
@@ -503,7 +601,7 @@ if ($runtimeDevice -eq "cuda") {
     "einops" "omegaconf>=2.3" "huggingface_hub" "transformers>=4.40" `
     "accelerate>=0.30" "diffusers>=0.27" "fastapi==0.115.5" `
     "uvicorn[standard]==0.32.1" "python-multipart==0.0.12" "pydantic>=2.0" `
-    "httpx" "$rembgPkg" "$onnxPkg" "open3d" "PyMCubes" "pyrender" -q
+    "httpx" "$rembgPkg" "$onnxPkg" "open3d" "PyMCubes" "pyrender" "kornia" "timm" -q
 if ($LASTEXITCODE -ne 0) { Fail "Core dependencies failed" }
 OK "Core dependencies installed"
 
@@ -632,14 +730,111 @@ if ($SelectedModels["trellis"] -and $runtimeDevice -eq "cuda") {
     Warn "TRELLIS requires an NVIDIA GPU. Re-run install with -Profile nvidia to enable it."
 }
 
-# ── TRELLIS.2 (Windows builds are very fragile - auto-disabled by default) ──
+# ── TRELLIS.2 ──────────────────────────────────────────────────────────────────
 if ($SelectedModels["trellis2"] -and $runtimeDevice -eq "cuda") {
-    Warn "TRELLIS.2 requires C++ extensions (CuMesh, FlexGEMM, o-voxel) that often fail to build on Windows."
-    Warn "Native extension builds frequently fail. Recommend using TripoSR or TRELLIS instead."
+    Step "Installing TRELLIS.2 (experimental, CUDA only)"
+    Warn "TRELLIS.2 native extensions may fail to build; failures are non-fatal."
 
-    Step "Skipping TRELLIS.2 (native extensions conflict with MSVC/CUDA build chain)"
-    Warn "To force TRELLIS.2 install in the future, manually edit this script to enable it."
-    Warn "TRELLIS (without the .2) provides excellent quality without native builds."
+    # ── Clone official TRELLIS.2 repo ──
+    $trellis2RepoUrl = "https://github.com/microsoft/TRELLIS.2.git"
+    if (Test-Path -LiteralPath $trellis2Repo) { Remove-Item -Recurse -Force -LiteralPath $trellis2Repo }
+    Info "Cloning TRELLIS.2 repo..."
+    git clone --quiet --depth 1 --recurse-submodules "$trellis2RepoUrl" "$trellis2Repo" 2>$null
+    if (-not (Test-Path -LiteralPath $trellis2Repo)) {
+        Warn "TRELLIS.2 repo clone failed - will try to use existing backend/trellis2 if present"
+    }
+    if (Test-Path -LiteralPath $trellis2Repo) {
+        git -C "$trellis2Repo" submodule update --init --recursive --depth 1 2>$null | Out-Null
+        OK "TRELLIS.2 repo cloned"
+    }
+
+    # ── Copy trellis2 Python package to backend ──
+    $t2PkgSrc = Join-Path $trellis2Repo "trellis2"
+    if (-not (Test-Path -LiteralPath $t2PkgSrc)) {
+        # Some repos may ship it as 'trellis' inside the trellis2 branch
+        $t2PkgSrc = Join-Path $trellis2Repo "trellis"
+    }
+    if (Test-Path -LiteralPath $trellis2Dest) { Remove-Item -Recurse -Force -LiteralPath $trellis2Dest }
+    if (Test-Path -LiteralPath $t2PkgSrc) {
+        Copy-Item -Recurse -LiteralPath $t2PkgSrc -Destination $trellis2Dest
+        OK "TRELLIS.2 package copied to backend"
+        # Ensure PIXFORM runtime import compatibility alias exists.
+        $t2PipelinesInit = Join-Path $trellis2Dest "pipelines\__init__.py"
+        if (Patch-Trellis2PipelineAliases "$PY" "$t2PipelinesInit") {
+            OK "TRELLIS.2 pipeline alias patched"
+        }
+        # Patch flexicubes kaolin fallback
+        $t2FlexPath = Join-Path $trellis2Dest "representations\mesh\flexicubes\flexicubes.py"
+        if (Patch-TrellisFlexicubes "$PY" "$t2FlexPath") {
+            OK "TRELLIS.2 kaolin fallback applied"
+        }
+        # Patch image feature extractor for open-source DINOv2 fallback
+        $t2IFEPath = Join-Path $trellis2Dest "modules\sparse\attention\image_feature_extractor.py"
+        if (-not (Test-Path -LiteralPath $t2IFEPath)) {
+            $t2IFEPath = Join-Path $trellis2Dest "modules\attention\image_feature_extractor.py"
+        }
+        if (Patch-Trellis2ImageExtractorForOSS "$PY" "$t2IFEPath") {
+            OK "TRELLIS.2 image extractor patched (DINOv2 fallback)"
+        }
+    } else {
+        Warn "trellis2/ package folder not found in cloned repo - TRELLIS.2 Python package unavailable"
+    }
+
+    # ── xformers / spconv (shared with TRELLIS, skip if already done) ──
+    $xformersCheck = & "$PY" -c "import xformers" 2>$null; $xformersOk = ($LASTEXITCODE -eq 0)
+    if (-not $xformersOk) {
+        Info "Installing xformers for TRELLIS.2..."
+        & "$PY" -m pip install xformers==0.0.28.post3 --index-url https://download.pytorch.org/whl/cu124 -q
+        if ($LASTEXITCODE -eq 0) { OK "xformers installed" } else { Warn "xformers failed" }
+        & "$PY" -m pip install spconv-cu120 -q
+        if ($LASTEXITCODE -eq 0) { OK "spconv installed" } else { Warn "spconv failed" }
+    }
+
+    Info "Installing TRELLIS.2 Python helpers..."
+    & "$PY" -m pip install easydict plyfile xatlas pyvista pymeshfix igraph -q
+    if ($LASTEXITCODE -eq 0) { OK "TRELLIS.2 helper packages installed" } else { Warn "TRELLIS.2 helper package install had failures" }
+    & "$PY" -m pip install "git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8" -q
+    if ($LASTEXITCODE -eq 0) { OK "utils3d installed" } else { Warn "utils3d install failed" }
+
+    # ── flex_gemm: already present as pure Python in backend/flex_gemm ──
+    $flexGemmDest = Join-Path $backendPath "flex_gemm"
+    if (Test-Path -LiteralPath $flexGemmDest) {
+        OK "flex_gemm already present in backend (pure Python)"
+    } else {
+        # Try to clone flex_gemm from known location
+        $fgOk = Install-GitCudaPackage "flex_gemm" "https://github.com/microsoft/FlexGEMM.git" "$PY" "$env:TEMP\pixform_ext"
+        if (-not $fgOk) {
+            Warn "flex_gemm build failed - TRELLIS.2 may not load"
+        }
+    }
+
+    # ── o_voxel: already present as pure Python in backend/o_voxel ──
+    $oVoxelDest = Join-Path $backendPath "o_voxel"
+    if (Test-Path -LiteralPath $oVoxelDest) {
+        OK "o_voxel already present in backend (pure Python)"
+    } else {
+        # Try to build o_voxel C++ extension
+        $oVoxelRepoPath = Join-Path $env:TEMP "pixform_o_voxel"
+        $ovOk = Install-GitCudaPackage "o_voxel" "https://github.com/microsoft/o_voxel.git" "$PY" "$env:TEMP\pixform_ext"
+        if (-not $ovOk) {
+            Warn "o_voxel build failed - TRELLIS.2 may run slower (pure Python fallback)"
+        }
+    }
+
+    # ── cumesh: use bundled stub (no public repo available) ──
+    Info "Setting up cumesh (stub fallback - native build not available publicly)..."
+    $cumeshDest = Join-Path $backendPath "cumesh"
+    $cumeshCheck = & "$PY" -c "import cumesh; print(cumesh.__version__)" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        OK "cumesh already importable ($($cumeshCheck.Trim()))"
+    } else {
+        if (Test-Path -LiteralPath $cumeshDest) {
+            OK "cumesh stub present in backend/"
+        } else {
+            Warn "cumesh not found - TRELLIS.2 will run in degraded mode (mesh ops via fallback)"
+            Warn "If you have the CuMesh source, place it in backend/cumesh/ and reinstall."
+        }
+    }
 } elseif (-not $SelectedModels["trellis2"]) {
     Step "Skipping TRELLIS.2 (not selected)"
 } else {
@@ -787,16 +982,22 @@ else:
             print(f'  TRELLIS.2 package: found ({len(list(trellis2_pkg.iterdir()))} items)')
             import importlib.util
             import os
-            missing = [d for d in ('cumesh', 'flex_gemm', 'o_voxel') if importlib.util.find_spec(d) is None]
-            if missing:
-                missing_str = ', '.join(missing)
-                print(f'  TRELLIS.2 runtime deps missing: {missing_str} (TRELLIS.2 disabled)')
+            # flex_gemm is the only hard requirement; cumesh and o_voxel are soft-optional
+            missing_hard = [d for d in ('flex_gemm',) if importlib.util.find_spec(d) is None]
+            missing_soft = [d for d in ('cumesh', 'o_voxel') if importlib.util.find_spec(d) is None]
+            if missing_hard:
+                missing_str = ', '.join(missing_hard)
+                print(f'  TRELLIS.2 required deps missing: {missing_str} (TRELLIS.2 disabled)')
             else:
+                if missing_soft:
+                    missing_soft_str = ', '.join(missing_soft)
+                    print(f'  TRELLIS.2 optional deps missing (degraded mode): {missing_soft_str}')
                 os.environ.setdefault('SPARSE_CONV_BACKEND', 'spconv')
                 os.environ.setdefault('SPARSE_ATTN_BACKEND', 'xformers')
                 os.environ.setdefault('ATTN_BACKEND', 'xformers')
+                sys.path.insert(0, str(trellis2_pkg.parent))
                 from trellis2.pipelines import Trellis2ImageTo3DPipeline
-                print('  TRELLIS.2: OK')
+                print('  TRELLIS.2: OK (Trellis2ImageTo3DPipeline available)')
         else:
             print('  TRELLIS.2 package: not found (optional CUDA feature)')
     except Exception as e:

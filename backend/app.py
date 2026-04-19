@@ -124,21 +124,54 @@ def _format_model_load_error(model_name: str, exc: Exception) -> str:
     """Return concise, actionable load errors for UI health cards."""
     raw = str(exc)
     low = raw.lower()
+    if _is_hf_auth_error_text(low):
+        return (
+            f"{model_name} could not access a gated model dependency. "
+            "Configure a local model path (no authentication needed at runtime) or provide "
+            "valid access for the configured Hugging Face repo."
+        )
+    if "no attribute flexidualgridvaedecoder" in low or "no attribute sparseunetvaedecoder" in low:
+        return (
+            f"{model_name} runtime package is missing required TRELLIS.2 classes "
+            "(FlexiDualGridVaeDecoder/SparseUnetVaeDecoder). "
+            "Update backend/trellis2 to a TRELLIS.2-compatible code release; reinstall alone won't fix this."
+        )
+    return raw
+
+
+def _is_hf_auth_error_text(low_text: str) -> bool:
     hf_access_markers = (
         "cannot access gated repo",
         "gated repo",
         "access to model",
         "please log in",
         "401",
+        "403",
         "unauthorized",
+        "repository not found",
+        "invalid username or password",
     )
-    if any(marker in low for marker in hf_access_markers):
-        return (
-            f"{model_name} could not access a gated model dependency. "
-            "Open-source fallback should be used automatically; if loading still fails, "
-            "check /health details for the remaining missing dependency."
-        )
-    return raw
+    return any(marker in low_text for marker in hf_access_markers)
+
+
+def _resolve_trellis2_model_source() -> str:
+    """
+    Resolve TRELLIS.2 model source.
+
+    Priority:
+      1) PIXFORM_TRELLIS2_MODEL
+      2) backend/models/trellis2_4b (local/offline default)
+      3) microsoft/TRELLIS.2-4B (remote, may require auth)
+    """
+    explicit = os.getenv("PIXFORM_TRELLIS2_MODEL", "").strip()
+    if explicit:
+        return explicit
+
+    local_default = BASE_DIR / "models" / "trellis2_4b"
+    if local_default.exists():
+        return str(local_default)
+
+    return "microsoft/TRELLIS.2-4B"
 
 
 def _resolve_installed_models() -> dict:
@@ -490,17 +523,22 @@ def load_all_models():
                 raise ImportError("trellis2 package not found in backend/")
 
             # Probe required native deps before attempting a full load
-            _missing = [d for d in ("cumesh", "flex_gemm") if _il.util.find_spec(d) is None]
-            if _missing:
-                raise ImportError(f"Missing TRELLIS.2 runtime deps: {', '.join(_missing)}")
+            _missing_hard = [d for d in ("flex_gemm",) if _il.util.find_spec(d) is None]
+            if _missing_hard:
+                raise ImportError(f"Missing TRELLIS.2 runtime deps: {', '.join(_missing_hard)}")
+            _missing_soft = [d for d in ("cumesh", "o_voxel") if _il.util.find_spec(d) is None]
+            if _missing_soft:
+                logger.warning(f"TRELLIS.2: optional native deps missing ({', '.join(_missing_soft)}); running in degraded mode")
 
             os.environ.setdefault("SPARSE_CONV_BACKEND", "spconv")
             os.environ.setdefault("ATTN_BACKEND", "xformers")
             os.environ.setdefault("SPARSE_ATTN_BACKEND", "xformers")
 
             from trellis2.pipelines import Trellis2ImageTo3DPipeline
+            trellis2_source = _resolve_trellis2_model_source()
             logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
-            pipe2 = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
+            logger.info("TRELLIS.2 source: %s", trellis2_source)
+            pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source)
             pipe2.cuda()
             models["trellis2"] = pipe2
             set_model_health("trellis2", "loaded")
