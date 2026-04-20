@@ -882,8 +882,11 @@ def _build_trellis2_sampler_params(ui_steps: int) -> dict:
 
 
 def _fast_finalize_mesh(mesh, target_profile: Optional[dict] = None):
-    """Fast fallback mesh finalize path used when heavy postprocess times out."""
+    """Fast fallback mesh finalize path used when heavy postprocess times out.
+    Applies basic repair + a low-resolution voxel remesh to guarantee a solid, closed mesh.
+    """
     import trimesh
+    import trimesh.smoothing
 
     try:
         trimesh.repair.fix_normals(mesh)
@@ -895,12 +898,48 @@ def _fast_finalize_mesh(mesh, target_profile: Optional[dict] = None):
     except Exception:
         pass
 
+    # If still not watertight, do a fast low-res voxel remesh to guarantee closure.
+    # This is much faster than the full Poisson pipeline but still produces a solid mesh.
+    if not mesh.is_watertight:
+        try:
+            pitch = max(float(mesh.extents.max()) / 96, 1e-6)
+            vox = mesh.voxelized(pitch=pitch)
+            vox.fill()
+            remeshed = vox.marching_cubes
+            if len(remeshed.faces) > 100:
+                smoothed = trimesh.smoothing.filter_taubin(remeshed, iterations=3)
+                mesh = smoothed if smoothed.is_watertight else remeshed
+        except Exception:
+            pass
+
     mesh = _apply_input_aspect_correction(mesh, target_profile)
 
     bounds = mesh.bounds
     size = max(bounds[1] - bounds[0])
     if size > 0:
         mesh.apply_scale(100.0 / size)
+
+    return mesh
+
+
+def _try_meshfix_watertight(mesh):
+    """Try to make mesh watertight with MeshFix while preserving geometry detail.
+    Returns original mesh if pymeshfix is unavailable or repair fails.
+    """
+    import trimesh
+    import numpy as _np
+
+    try:
+        import pymeshfix
+
+        mf = pymeshfix.MeshFix(_np.asarray(mesh.vertices), _np.asarray(mesh.faces))
+        mf.repair(verbose=False, joincomp=True, remove_smallest_components=False)
+        v, f = mf.v, mf.f
+        if len(v) > 100 and len(f) > 100:
+            repaired = trimesh.Trimesh(vertices=v, faces=f, process=False)
+            return repaired
+    except Exception as e:
+        logger.info(f"MeshFix skipped: {e}")
 
     return mesh
 
@@ -914,9 +953,10 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     import trimesh.smoothing
     import numpy as _np
 
-    smooth_iters   = {"none": 0, "light": 5,  "standard": 15, "heavy": 25}.get(level, 15)
-    poisson_depth  = {"none": 9, "light": 10, "standard": 12, "heavy": 13}.get(level, 12)
-    poisson_points = {"none": 60000, "light": 150000, "standard": 400000, "heavy": 700000}.get(level, 400000)
+    smooth_iters        = {"none": 0, "light": 5,  "standard": 10, "heavy": 15}.get(level, 10)
+    poisson_depth       = {"none": 9, "light": 10, "standard": 12, "heavy": 13}.get(level, 12)
+    poisson_points      = {"none": 60000, "light": 150000, "standard": 350000, "heavy": 600000}.get(level, 350000)
+    post_smooth_iters   = {"none": 0, "light": 3,  "standard": 8,  "heavy": 12}.get(level, 8)
     use_poisson = level in {"standard", "heavy"}
     is_trellis2 = model_key == "trellis2"
     if is_trellis2 and level == "light":
@@ -930,6 +970,13 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     upd(job_id, progress=86, message="Cleaning mesh...")
 
     # ÔöÇÔöÇ 1. Keep largest component ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    try:
+        parts = mesh.split(only_watertight=False)
+        if len(parts) > 1:
+            mesh = max(parts, key=lambda g: len(g.faces))
+            logger.info(f"Keeping largest connected component: {len(mesh.faces):,} faces")
+    except Exception:
+        pass
 
     # ÔöÇÔöÇ 2. Basic repair ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     trimesh.repair.fix_normals(mesh)
@@ -965,33 +1012,57 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
             o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
             o3d_mesh.compute_vertex_normals()
 
-            # Step 1: oversample uniformly (fast, O(n)).
-            # use_triangle_normal=True gives each point the face normal – already consistent.
-            oversample_n = poisson_points * 10
+            # Step 1: oversample uniformly using INTERPOLATED VERTEX normals (not face normals).
+            # Vertex normals are area-weighted averages of adjacent face normals → much smoother
+            # than raw per-face normals. This prevents the "small bumps" artifact where Poisson
+            # reconstructs each noisy face normal as a physical bump on the surface.
+            oversample_n = poisson_points * 5   # 5x is enough; 10x was overkill and slow
             pcd = o3d_mesh.sample_points_uniformly(
                 number_of_points=oversample_n,
-                use_triangle_normal=True,
+                use_triangle_normal=False,   # False = interpolate smooth vertex normals
             )
 
-            # Step 2: voxel_down_sample to get ~poisson_points EVENLY distributed points.
-            # This mimics the spatial guarantee of poisson_disk but is 50-100x faster.
-            surface_area = o3d_mesh.get_surface_area()
+            # Step 2: voxel_down_sample → evenly distributed points (mimics poisson_disk spacing).
+            # Complex meshes often collapse to far fewer points than requested with a naive
+            # surface-area estimate, so retry with smaller voxels until we are near target.
+            surface_area = max(float(o3d_mesh.get_surface_area()), 1e-8)
             voxel_size = float(_np.sqrt(surface_area / poisson_points))
-            pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
-            logger.info(f"Poisson input: {len(pcd.points):,} pts (target {poisson_points:,}), depth={poisson_depth}")
+            sampled_pcd = pcd
+            pcd = sampled_pcd.voxel_down_sample(voxel_size=voxel_size)
+            retry_count = 0
+            while len(pcd.points) < int(poisson_points * 0.7) and retry_count < 4:
+                voxel_size *= 0.8
+                pcd = sampled_pcd.voxel_down_sample(voxel_size=voxel_size)
+                retry_count += 1
+            logger.info(
+                f"Poisson input: {len(pcd.points):,} pts (target {poisson_points:,}), depth={poisson_depth}, voxel_retry={retry_count}"
+            )
 
+            # Step 3: re-orient normals consistently after voxel averaging.
+            # Keep interpolated mesh normals as-is; re-orienting toward a camera point can flip
+            # valid normals on concave or wrapped geometry. Only estimate/orient when normals are missing.
             if not pcd.has_normals():
-                pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+                pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=voxel_size * 3, max_nn=50))
+                pcd.orient_normals_consistent_tangent_plane(24)
 
             poisson_mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-                pcd, depth=poisson_depth, width=0, scale=1.05, linear_fit=False
+                pcd, depth=poisson_depth, width=0, scale=1.05, linear_fit=True
             )
 
-            # Trim low-density outlier surface fragments based on quality level
-            density_trim_pct = {"none": 1, "light": 3, "standard": 5, "heavy": 8}.get(level, 5)
-            dens   = _np.asarray(densities)
-            thresh = _np.percentile(dens, density_trim_pct)
-            poisson_mesh.remove_vertices_by_mask(dens < thresh)
+            # Trim only the absolute lowest-density outlier "outer envelope" fragments.
+            # Poisson reconstruction is inherently watertight BEFORE this trim; keeping
+            # the trim percentage near zero preserves that guarantee.
+            density_trim_pct = 0.0 if is_trellis2 else {"none": 0.1, "light": 0.25, "standard": 0.25, "heavy": 0.5}.get(level, 0.25)
+            dens = _np.asarray(densities)
+            if density_trim_pct > 0:
+                thresh = _np.percentile(dens, density_trim_pct)
+                poisson_mesh.remove_vertices_by_mask(dens < thresh)
+            # Clean up any non-manifold edges before converting.
+            poisson_mesh.remove_non_manifold_edges()
+            poisson_mesh.remove_degenerate_triangles()
+            poisson_mesh.remove_duplicated_triangles()
+            poisson_mesh.remove_duplicated_vertices()
             poisson_mesh.compute_vertex_normals()
 
             v = _np.asarray(poisson_mesh.vertices)
@@ -1002,35 +1073,76 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
                     mesh = candidate
                     logger.info(f"Poisson OK: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
 
+                    # Post-Poisson smoothing: removes jagged trim-boundary artifacts and
+                    # gives the final mesh a clean, smooth surface ready for printing.
+                    if post_smooth_iters > 0:
+                        upd(job_id, progress=93, message="Smoothing reconstructed surface...")
+                        try:
+                            mesh = trimesh.smoothing.filter_taubin(mesh, iterations=post_smooth_iters)
+                        except Exception:
+                            pass
+
         except Exception as e:
             logger.warning(f"Poisson failed: {e} - continuing with trimesh repair")
     else:
         upd(job_id, progress=91, message="Skipping Poisson for fast preset...")
 
-    # ÔöÇÔöÇ 5. Hole filling ÔÇö multiple passes ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # ── 5. Hole filling – multiple passes ──────────────────────────────────────
     upd(job_id, progress=94, message="Filling holes...")
-    for _ in range(5):
+    for _ in range(10):
         if mesh.is_watertight:
             break
         trimesh.repair.fill_holes(mesh)
         trimesh.repair.fix_normals(mesh)
 
-    # ÔöÇÔöÇ 6. Voxel remesh fallback ÔÇö guaranteed closed if still open ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # MeshFix can sometimes over-close / inflate TRELLIS.2 geometry into a large blob.
+    # Keep it opt-in for manual experiments instead of part of the default path.
+    if is_trellis2 and not mesh.is_watertight and os.environ.get("PIXFORM_TRELLIS2_USE_MESHFIX", "0") == "1":
+        upd(job_id, progress=95, message="Repairing manifold (MeshFix)...")
+        mesh = _try_meshfix_watertight(mesh)
+        logger.info(f"MeshFix result: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
+
+    # ── 6. Voxel remesh fallback – guaranteed closed if still open ─────────────
     if not mesh.is_watertight:
         upd(job_id, progress=96, message="Voxel remesh (closing remaining holes)...")
         try:
             voxel_divisions = 160 if is_trellis2 else 128
             pitch    = max(float(mesh.extents.max()) / voxel_divisions, 1e-6)
             vox      = mesh.voxelized(pitch=pitch)
+            vox.fill()
             remeshed = vox.marching_cubes
-            if remeshed.is_watertight and len(remeshed.faces) > 100:
-                remesh_smooth_iters = 2 if is_trellis2 else 5
-                if remesh_smooth_iters > 0:
-                    remeshed = trimesh.smoothing.filter_taubin(remeshed, iterations=remesh_smooth_iters)
-                mesh = remeshed
+            if len(remeshed.faces) > 100:
+                # Smooth BEFORE accepting – Taubin can open micro-holes, so smooth first,
+                # then fill any opened holes, then verify.
+                remesh_smooth_iters = 3 if is_trellis2 else 5
+                smoothed = trimesh.smoothing.filter_taubin(remeshed, iterations=remesh_smooth_iters)
+                for _ in range(5):
+                    if smoothed.is_watertight:
+                        break
+                    trimesh.repair.fill_holes(smoothed)
+                    trimesh.repair.fix_normals(smoothed)
+                mesh = smoothed if smoothed.is_watertight else remeshed
                 logger.info(f"Voxel remesh: {len(mesh.faces):,} faces, watertight: {mesh.is_watertight}")
         except Exception as e:
             logger.warning(f"Voxel remesh failed: {e}")
+
+    # ── 7. Absolute watertight guarantee ──────────────────────────────────────
+    # If still not watertight after everything above, do a final bare voxel remesh
+    # at low resolution with NO smoothing. Marching cubes is always closed by definition.
+    if not mesh.is_watertight:
+        upd(job_id, progress=98, message="Enforcing watertight (final pass)...")
+        try:
+            pitch_final = max(float(mesh.extents.max()) / 96, 1e-6)
+            vox_final = mesh.voxelized(pitch=pitch_final)
+            vox_final.fill()
+            mesh_final  = vox_final.marching_cubes
+            if mesh_final.is_watertight and len(mesh_final.faces) > 100:
+                logger.info(f"Watertight enforced via low-res voxel: {len(mesh_final.faces):,} faces")
+                mesh = mesh_final
+            else:
+                logger.warning("Could not enforce watertight; delivering best-effort mesh")
+        except Exception as e:
+            logger.warning(f"Final watertight pass failed: {e}")
 
     # ÔöÇÔöÇ 7. Final cleanup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
     try:
@@ -1796,7 +1908,10 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         # ── Pre-decimate TRELLIS.2 raw mesh before post-processing ───────────
         # Target scales with post level: less post = fewer faces needed.
         _post_level_now = settings.get("post", "standard")
-        _predecim_defaults = {"none": 300_000, "light": 600_000, "standard": 1_500_000, "heavy": 2_000_000}
+        # Pre-decim target: Poisson reconstruction works from point samples, not faces.
+        # Keeping 1.5M+ faces is wasteful and makes Taubin smoothing + sampling very slow.
+        # 400-600k is more than enough detail for Poisson to reconstruct at depth 11-12.
+        _predecim_defaults = {"none": 100_000, "light": 200_000, "standard": 400_000, "heavy": 600_000}
         _TRELLIS2_PREDECIM_TARGET = int(os.environ.get(
             "PIXFORM_TRELLIS2_PREDECIM_FACES",
             str(_predecim_defaults.get(_post_level_now, 1_000_000))
@@ -1811,13 +1926,25 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
                     o3d_mesh = o3d.geometry.TriangleMesh()
                     o3d_mesh.vertices = o3d.utility.Vector3dVector(_np.array(raw_mesh.vertices, dtype=_np.float64))
                     o3d_mesh.triangles = o3d.utility.Vector3iVector(_np.array(raw_mesh.faces, dtype=_np.int32))
+                    o3d_mesh.remove_degenerate_triangles()
+                    o3d_mesh.remove_duplicated_triangles()
+                    o3d_mesh.remove_duplicated_vertices()
+                    o3d_mesh.remove_non_manifold_edges()
                     decimated_o3d = o3d_mesh.simplify_quadric_decimation(target_number_of_triangles=_TRELLIS2_PREDECIM_TARGET)
+                    if len(decimated_o3d.triangles) > int(_TRELLIS2_PREDECIM_TARGET * 1.35):
+                        decimated_o3d = decimated_o3d.simplify_quadric_decimation(target_number_of_triangles=_TRELLIS2_PREDECIM_TARGET)
                     import trimesh as _trimesh
                     result = _trimesh.Trimesh(
                         vertices=_np.asarray(decimated_o3d.vertices),
                         faces=_np.asarray(decimated_o3d.triangles),
                         process=False,
                     )
+                    try:
+                        parts = result.split(only_watertight=False)
+                        if len(parts) > 1:
+                            result = max(parts, key=lambda g: len(g.faces))
+                    except Exception:
+                        pass
                     return result if len(result.faces) > 0 else raw_mesh
                 except Exception as e:
                     logger.warning(f"TRELLIS.2 pre-decimation failed ({e}), using raw mesh")
