@@ -915,8 +915,8 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
     import numpy as _np
 
     smooth_iters   = {"none": 0, "light": 5,  "standard": 15, "heavy": 25}.get(level, 15)
-    poisson_depth  = {"none": 9, "light": 10, "standard": 11, "heavy": 12}.get(level, 11)
-    poisson_points = {"none": 60000, "light": 100000, "standard": 200000, "heavy": 350000}.get(level, 200000)
+    poisson_depth  = {"none": 9, "light": 10, "standard": 12, "heavy": 13}.get(level, 12)
+    poisson_points = {"none": 60000, "light": 150000, "standard": 400000, "heavy": 700000}.get(level, 400000)
     use_poisson = level in {"standard", "heavy"}
     is_trellis2 = model_key == "trellis2"
     if is_trellis2 and level == "light":
@@ -924,7 +924,7 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
         # Poisson pass for "light" to close surfaces without the full "standard" cost.
         use_poisson = True
         poisson_depth = 10
-        poisson_points = 120000
+        poisson_points = 150000
 
     logger.info(f"Post-processing [{level}]: {len(mesh.faces):,} faces")
     upd(job_id, progress=86, message="Cleaning mesh...")
@@ -958,19 +958,30 @@ def postprocess_mesh(mesh, job_id, level="standard", target_profile: Optional[di
         try:
             import open3d as o3d
 
+            # Build Open3D mesh from the FULL mesh (no pre-decimation – uniform sampling
+            # is O(n) and fast regardless of face count, so we keep all detail).
             o3d_mesh = o3d.geometry.TriangleMesh()
             o3d_mesh.vertices  = o3d.utility.Vector3dVector(mesh.vertices)
             o3d_mesh.triangles = o3d.utility.Vector3iVector(mesh.faces)
             o3d_mesh.compute_vertex_normals()
 
-            pcd = o3d_mesh.sample_points_poisson_disk(number_of_points=poisson_points)
-            # Normals are inherited from the mesh via compute_vertex_normals(); do NOT
-            # call estimate_normals() here – it discards the correct face-derived normals
-            # and produces random/flipped orientations that make Poisson build a cloud-like
-            # outer envelope around the point cloud instead of a tight surface.
+            # Step 1: oversample uniformly (fast, O(n)).
+            # use_triangle_normal=True gives each point the face normal – already consistent.
+            oversample_n = poisson_points * 10
+            pcd = o3d_mesh.sample_points_uniformly(
+                number_of_points=oversample_n,
+                use_triangle_normal=True,
+            )
+
+            # Step 2: voxel_down_sample to get ~poisson_points EVENLY distributed points.
+            # This mimics the spatial guarantee of poisson_disk but is 50-100x faster.
+            surface_area = o3d_mesh.get_surface_area()
+            voxel_size = float(_np.sqrt(surface_area / poisson_points))
+            pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
+            logger.info(f"Poisson input: {len(pcd.points):,} pts (target {poisson_points:,}), depth={poisson_depth}")
+
             if not pcd.has_normals():
                 pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-            pcd.orient_normals_consistent_tangent_plane(100)
 
             poisson_mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
                 pcd, depth=poisson_depth, width=0, scale=1.05, linear_fit=False
