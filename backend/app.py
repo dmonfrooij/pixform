@@ -1383,7 +1383,28 @@ async def run_hunyuan(job_id: str, image_path: Path, out_dir: Path, settings: di
             raise RuntimeError("Hunyuan3D-2 produced an empty mesh")
         post_level = settings.get("post", "standard")
         upd(job_id, progress=80, message=f"Post-processing [{post_level}]...", stage="postprocess")
-        mesh = await loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
+        post_default = {"none": 300, "light": 600, "standard": 900, "heavy": 1800}.get(post_level, 900)
+        post_timeout = _resolve_timeout_seconds("PIXFORM_POST_TIMEOUT_SEC", post_default)
+        mesh_for_fallback = mesh.copy()
+        try:
+            post_task = loop.run_in_executor(None, lambda: postprocess_mesh(mesh, job_id, post_level, input_profile))
+            post_started = time.time()
+            while not post_task.done():
+                await asyncio.sleep(8)
+                _assert_not_cancelled(job_id)
+                elapsed_post = int(time.time() - post_started)
+                if post_timeout and elapsed_post >= post_timeout:
+                    raise asyncio.TimeoutError
+                job_st = jobs.get(job_id, {})
+                stale_for = time.time() - float(job_st.get("last_update_ts") or post_started)
+                if stale_for >= 16:
+                    heartbeat_progress = min(93, 80 + elapsed_post // 30)
+                    upd(job_id, progress=int(heartbeat_progress), message=f"Post-processing [{post_level}]... {elapsed_post}s elapsed", stage="postprocess")
+            mesh = await post_task
+        except asyncio.TimeoutError:
+            logger.warning(f"Hunyuan3D-2 postprocess timed out after {post_timeout}s; using fast fallback")
+            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
+            mesh = _fast_finalize_mesh(mesh_for_fallback, input_profile)
         _assert_not_cancelled(job_id)
 
         # Export
@@ -1800,10 +1821,31 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         # fallback, identical to what TripoSR and Hunyuan use.
         post_level = settings.get("post", "standard")
         upd(job_id, progress=85, message="Post-processing mesh (Poisson + repair)...")
-        mesh = await loop.run_in_executor(
-            None,
-            lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile, model_key="trellis2"),
-        )
+        post_default = {"none": 300, "light": 600, "standard": 1200, "heavy": 2400}.get(post_level, 1200)
+        post_timeout = _resolve_timeout_seconds("PIXFORM_POST_TIMEOUT_SEC", post_default)
+        raw_mesh_copy = raw_mesh.copy()
+        try:
+            post_task = loop.run_in_executor(
+                None,
+                lambda: postprocess_mesh(raw_mesh, job_id, post_level, input_profile, model_key="trellis2"),
+            )
+            post_started = time.time()
+            while not post_task.done():
+                await asyncio.sleep(8)
+                _assert_not_cancelled(job_id)
+                elapsed_post = int(time.time() - post_started)
+                if post_timeout and elapsed_post >= post_timeout:
+                    raise asyncio.TimeoutError
+                job_st = jobs.get(job_id, {})
+                stale_for = time.time() - float(job_st.get("last_update_ts") or post_started)
+                if stale_for >= 16:
+                    heartbeat_progress = min(93, 85 + elapsed_post // 30)
+                    upd(job_id, progress=int(heartbeat_progress), message=f"Post-processing [{post_level}]... {elapsed_post}s elapsed", stage="postprocess")
+            mesh = await post_task
+        except asyncio.TimeoutError:
+            logger.warning(f"TRELLIS.2 postprocess timed out after {post_timeout}s; using fast fallback")
+            upd(job_id, progress=88, message="Postprocess timeout, using fast finalize...", stage="postprocess_fallback")
+            mesh = _fast_finalize_mesh(raw_mesh_copy, input_profile)
         _assert_not_cancelled(job_id)
 
         logger.info(f"TRELLIS.2 post-processing complete: {len(mesh.faces):,} faces | watertight: {mesh.is_watertight}")
