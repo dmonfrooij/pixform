@@ -480,6 +480,23 @@ TRELLIS.2 uses `facebook/dinov3-vitl16-pretrain-lvd1689m` as its image encoder. 
 
 > The download is ~1 GB and happens only once. The script tells you exactly what to do if something goes wrong.
 
+### 8. TRELLIS.2 endpoint-first mode (remote first, local fallback)
+
+If you prefer trying a remote endpoint before local TRELLIS.2 execution, set these environment variables:
+
+```powershell
+$env:PIXFORM_TRELLIS2_ENDPOINT_URL = "https://api-inference.huggingface.co/models/microsoft/TRELLIS.2-4B"
+$env:HF_TOKEN = "hf_your_token_here"
+$env:PIXFORM_TRELLIS2_ENDPOINT_TIMEOUT_SEC = "90"
+.\PIXFORM.bat
+```
+
+Behavior:
+
+- PIXFORM tries the endpoint first for `trellis2` jobs.
+- If endpoint call fails (timeout, auth, schema, or HTTP error), PIXFORM automatically falls back to local TRELLIS.2.
+- `/health` exposes `trellis2_endpoint_enabled` so UI/tools can see whether endpoint-first mode is active.
+
 ---
 
 ## Project Structure

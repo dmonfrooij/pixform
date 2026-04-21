@@ -2,11 +2,13 @@
 PIXFORM Backend
 Image to 3D pipeline - TripoSR (fast) + Hunyuan3D-2 (quality) + TRELLIS (best)
 """
-import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json, gc
+import os, sys, uuid, shutil, asyncio, logging, zipfile, time, json, gc, base64
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
+from urllib import request as urlrequest, error as urlerror
+from urllib.parse import urlparse
 
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
@@ -192,6 +194,36 @@ def _resolve_trellis2_model_source() -> str:
         return str(local_default)
 
     return "microsoft/TRELLIS.2-4B"
+
+
+def _resolve_hf_token() -> Optional[str]:
+    for env_name in ("HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HUGGINGFACE_TOKEN"):
+        token = os.getenv(env_name, "").strip()
+        if token:
+            return token
+    return None
+
+
+def _resolve_trellis2_endpoint_url() -> str:
+    return os.getenv("PIXFORM_TRELLIS2_ENDPOINT_URL", "").strip()
+
+
+def _resolve_trellis2_endpoint_timeout_sec() -> int:
+    try:
+        v = int(str(os.getenv("PIXFORM_TRELLIS2_ENDPOINT_TIMEOUT_SEC", "90")).strip())
+    except Exception:
+        v = 90
+    return max(10, v)
+
+
+def _redacted_endpoint_for_log(endpoint_url: str) -> str:
+    try:
+        p = urlparse(endpoint_url)
+        host = p.netloc or endpoint_url
+        path = p.path or ""
+        return f"{host}{path}"
+    except Exception:
+        return endpoint_url
 
 
 def _resolve_installed_models() -> dict:
@@ -558,7 +590,11 @@ def load_all_models():
             trellis2_source = _resolve_trellis2_model_source()
             logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
             logger.info("TRELLIS.2 source: %s", trellis2_source)
-            pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source)
+            hf_token = _resolve_hf_token()
+            if hf_token:
+                pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source, token=hf_token)
+            else:
+                pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source)
             pipe2.cuda()
             models["trellis2"] = pipe2
             set_model_health("trellis2", "loaded")
@@ -610,6 +646,9 @@ class JobStatus(BaseModel):
     cancel_requested: Optional[bool] = None
     stage: Optional[str] = None
     last_update_ts: Optional[float] = None
+    endpoint_attempted: Optional[bool] = None
+    endpoint_used: Optional[bool] = None
+    endpoint_fail_reason: Optional[str] = None
 
 
 # Utilities
@@ -2050,6 +2089,274 @@ async def run_trellis2(job_id: str, image_path: Path, out_dir: Path, settings: d
         _finalize_job_resources(job_id)
 
 
+def _decode_data_url_or_b64(value: str) -> bytes:
+    payload = value.strip()
+    if payload.startswith("data:") and "," in payload:
+        payload = payload.split(",", 1)[1]
+    return base64.b64decode(payload)
+
+
+def _write_optional_b64_file(payload: Optional[str], out_path: Path) -> bool:
+    if not payload or not isinstance(payload, str):
+        return False
+    try:
+        out_path.write_bytes(_decode_data_url_or_b64(payload))
+        return True
+    except Exception:
+        return False
+
+
+def _write_optional_url_file(file_url: Optional[str], out_path: Path, auth_token: Optional[str]) -> bool:
+    if not file_url or not isinstance(file_url, str):
+        return False
+    try:
+        headers = {"Accept": "application/octet-stream"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        req = urlrequest.Request(file_url, headers=headers, method="GET")
+        with urlrequest.urlopen(req, timeout=45) as resp:
+            out_path.write_bytes(resp.read())
+        return True
+    except Exception:
+        return False
+
+
+def _extract_endpoint_outputs_to_dir(endpoint_payload: dict, out_dir: Path, auth_token: Optional[str]) -> dict:
+    blob = endpoint_payload if isinstance(endpoint_payload, dict) else {}
+    nested = blob.get("outputs") if isinstance(blob.get("outputs"), dict) else {}
+
+    def _pick(*keys):
+        for k in keys:
+            if k in blob:
+                return blob.get(k)
+            if k in nested:
+                return nested.get(k)
+        return None
+
+    _write_optional_b64_file(_pick("glb_base64", "model_glb_base64"), out_dir / "model.glb")
+    _write_optional_b64_file(_pick("obj_base64", "model_obj_base64"), out_dir / "model.obj")
+    _write_optional_b64_file(_pick("stl_base64", "model_stl_base64"), out_dir / "model.stl")
+    _write_optional_b64_file(_pick("tmf_base64", "3mf_base64", "model_3mf_base64"), out_dir / "model.3mf")
+    _write_optional_b64_file(_pick("preview_base64", "preview_png_base64"), out_dir / "preview.png")
+
+    _write_optional_url_file(_pick("glb_url", "model_glb_url"), out_dir / "model.glb", auth_token)
+    _write_optional_url_file(_pick("obj_url", "model_obj_url"), out_dir / "model.obj", auth_token)
+    _write_optional_url_file(_pick("stl_url", "model_stl_url"), out_dir / "model.stl", auth_token)
+    _write_optional_url_file(_pick("tmf_url", "3mf_url", "model_3mf_url"), out_dir / "model.3mf", auth_token)
+    _write_optional_url_file(_pick("preview_url", "preview_png_url"), out_dir / "preview.png", auth_token)
+
+    return {
+        "glb_url": "model.glb" if (out_dir / "model.glb").exists() else None,
+        "obj_url": "model.obj" if (out_dir / "model.obj").exists() else None,
+        "stl_url": "model.stl" if (out_dir / "model.stl").exists() else None,
+        "tmf_url": "model.3mf" if (out_dir / "model.3mf").exists() else None,
+        "preview_url": "preview.png" if (out_dir / "preview.png").exists() else None,
+        "poly_count": _pick("poly_count"),
+    }
+
+
+def _post_trellis2_endpoint_sync(image_path: Path, settings: dict, out_dir: Path) -> dict:
+    endpoint_url = _resolve_trellis2_endpoint_url()
+    if not endpoint_url:
+        return {"ok": False, "reason": "endpoint disabled"}
+
+    hf_token = _resolve_hf_token()
+    if not hf_token:
+        return {"ok": False, "reason": "HF token missing"}
+
+    request_body = {
+        "inputs": {
+            "image_base64": base64.b64encode(image_path.read_bytes()).decode("ascii"),
+        },
+        "parameters": {
+            "remove_bg": bool(settings.get("remove_bg", True)),
+            "resolution": int(settings.get("resolution", 1024)),
+            "steps": int(settings.get("steps", 36)),
+            "post": str(settings.get("post", "standard")),
+            "preserve_proportions": bool(settings.get("preserve_proportions", True)),
+        },
+        "options": {
+            "wait_for_model": True,
+        },
+    }
+
+    timeout_sec = _resolve_trellis2_endpoint_timeout_sec()
+    endpoint_log_name = _redacted_endpoint_for_log(endpoint_url)
+    img_size = 0
+    try:
+        img_size = image_path.stat().st_size
+    except Exception:
+        pass
+    logger.info(
+        "TRELLIS.2 endpoint request: endpoint=%s timeout=%ss image_bytes=%s steps=%s res=%s post=%s",
+        endpoint_log_name,
+        timeout_sec,
+        img_size,
+        settings.get("steps"),
+        settings.get("resolution"),
+        settings.get("post"),
+    )
+
+    started = time.monotonic()
+    poll_round = 0
+    while True:
+        poll_round += 1
+        logger.info("TRELLIS.2 endpoint poll #%s -> %s", poll_round, endpoint_log_name)
+        req = urlrequest.Request(
+            endpoint_url,
+            data=json.dumps(request_body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {hf_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json, application/octet-stream, model/gltf-binary",
+            },
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=min(60, timeout_sec)) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                raw = resp.read()
+                logger.info(
+                    "TRELLIS.2 endpoint response: status=%s content_type=%s bytes=%s",
+                    getattr(resp, "status", "?"),
+                    ctype or "unknown",
+                    len(raw),
+                )
+        except urlerror.HTTPError as e:
+            try:
+                err_raw = e.read().decode("utf-8", errors="ignore")
+                err_json = json.loads(err_raw) if err_raw else {}
+            except Exception:
+                err_json = {}
+                err_raw = str(e)
+
+            if e.code in {503, 504}:
+                est = err_json.get("estimated_time") if isinstance(err_json, dict) else None
+                sleep_s = int(est) if isinstance(est, (int, float)) else 5
+                logger.warning(
+                    "TRELLIS.2 endpoint transient HTTP %s on poll #%s (estimated_time=%s)",
+                    e.code,
+                    poll_round,
+                    est,
+                )
+                if time.monotonic() - started + sleep_s >= timeout_sec:
+                    return {"ok": False, "reason": f"endpoint timeout after {timeout_sec}s"}
+                time.sleep(max(2, min(sleep_s, 20)))
+                continue
+
+            return {"ok": False, "reason": f"http {e.code}: {err_raw}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"endpoint request failed: {e}"}
+
+        if "application/octet-stream" in ctype or "model/gltf-binary" in ctype:
+            (out_dir / "model.glb").write_bytes(raw)
+            logger.info("TRELLIS.2 endpoint returned binary GLB payload")
+            return {
+                "ok": True,
+                "glb_url": "model.glb",
+                "obj_url": None,
+                "stl_url": None,
+                "tmf_url": None,
+                "preview_url": None,
+                "poly_count": None,
+            }
+
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="ignore"))
+        except Exception:
+            return {"ok": False, "reason": "endpoint returned unsupported response"}
+
+        if isinstance(payload, dict) and payload.get("error"):
+            err_text = str(payload.get("error"))
+            est = payload.get("estimated_time")
+            logger.warning(
+                "TRELLIS.2 endpoint JSON error on poll #%s: %s (estimated_time=%s)",
+                poll_round,
+                err_text,
+                est,
+            )
+            if est is not None and time.monotonic() - started < timeout_sec:
+                sleep_s = max(2, min(int(est), 20)) if isinstance(est, (int, float)) else 5
+                if time.monotonic() - started + sleep_s >= timeout_sec:
+                    return {"ok": False, "reason": f"endpoint timeout after {timeout_sec}s"}
+                time.sleep(sleep_s)
+                continue
+            return {"ok": False, "reason": err_text}
+
+        files = _extract_endpoint_outputs_to_dir(payload if isinstance(payload, dict) else {}, out_dir, hf_token)
+        has_mesh = any(files.get(k) for k in ("glb_url", "obj_url", "stl_url", "tmf_url"))
+        logger.info(
+            "TRELLIS.2 endpoint artifacts: glb=%s obj=%s stl=%s 3mf=%s preview=%s",
+            bool(files.get("glb_url")),
+            bool(files.get("obj_url")),
+            bool(files.get("stl_url")),
+            bool(files.get("tmf_url")),
+            bool(files.get("preview_url")),
+        )
+        if has_mesh:
+            return {"ok": True, **files}
+
+        if time.monotonic() - started >= timeout_sec:
+            return {"ok": False, "reason": f"endpoint timeout after {timeout_sec}s"}
+        if poll_round >= 2:
+            return {"ok": False, "reason": "endpoint returned no mesh artifacts"}
+        time.sleep(3)
+
+
+async def run_trellis2_endpoint_first(job_id: str, image_path: Path, out_dir: Path, settings: dict):
+    try:
+        endpoint_url = _resolve_trellis2_endpoint_url()
+        upd(job_id, endpoint_attempted=False, endpoint_used=False, endpoint_fail_reason=None)
+        if endpoint_url:
+            upd(job_id, endpoint_attempted=True)
+            upd(job_id, status="processing", progress=6, message="Trying TRELLIS.2 endpoint...", stage="endpoint")
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: _post_trellis2_endpoint_sync(image_path, settings, out_dir))
+            _assert_not_cancelled(job_id)
+            if result.get("ok"):
+                elapsed = round(time.time() - float(jobs.get(job_id, {}).get("created_at", time.time())), 1)
+                upd(
+                    job_id,
+                    status="done",
+                    progress=100,
+                    message=f"Done in {elapsed}s (endpoint)",
+                    model_used="TRELLIS.2 (endpoint)",
+                    endpoint_used=True,
+                    time_taken=elapsed,
+                    stl_url=f"/outputs/{job_id}/{result['stl_url']}" if result.get("stl_url") else None,
+                    tmf_url=f"/outputs/{job_id}/{result['tmf_url']}" if result.get("tmf_url") else None,
+                    glb_url=f"/outputs/{job_id}/{result['glb_url']}" if result.get("glb_url") else None,
+                    obj_url=f"/outputs/{job_id}/{result['obj_url']}" if result.get("obj_url") else None,
+                    preview_url=f"/outputs/{job_id}/{result['preview_url']}" if result.get("preview_url") else None,
+                    poly_count=result.get("poly_count") if isinstance(result.get("poly_count"), int) else None,
+                    stage="done",
+                )
+                return
+            fail_reason = str(result.get("reason", "unknown endpoint failure"))
+            logger.warning("TRELLIS.2 endpoint failed, falling back to local: %s", fail_reason)
+            upd(
+                job_id,
+                endpoint_fail_reason=fail_reason,
+                progress=8,
+                message=f"Endpoint failed ({fail_reason}), falling back to local...",
+                stage="endpoint_fallback",
+            )
+
+        if models.get("trellis2") is None:
+            upd(job_id, status="error", message="TRELLIS.2 local model unavailable and endpoint failed")
+            return
+
+        logger.info("TRELLIS.2 local fallback started for job %s", job_id)
+        await run_trellis2(job_id, image_path, out_dir, settings)
+    except Exception as e:
+        if str(e) == "Job cancelled by user":
+            upd(job_id, status="cancelled", message="Cancelled by user")
+            return
+        logger.error(f"TRELLIS.2 endpoint/local orchestration failed: {e}", exc_info=True)
+        upd(job_id, status="error", message=str(e))
+        _finalize_job_resources(job_id)
+
+
 # ÔöÇÔöÇ Demo pipeline (no GPU) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
 
 async def run_demo(job_id: str, image_path: Path, out_dir: Path, settings: dict):
@@ -2101,6 +2408,9 @@ async def health():
         "trellis_error": model_health["trellis"]["error"],
         "trellis2_status": model_health["trellis2"]["status"],
         "trellis2_error": model_health["trellis2"]["error"],
+        "trellis2_endpoint_enabled": bool(_resolve_trellis2_endpoint_url()),
+        "trellis2_endpoint_host": _redacted_endpoint_for_log(_resolve_trellis2_endpoint_url()) if _resolve_trellis2_endpoint_url() else None,
+        "hf_token_present": bool(_resolve_hf_token()),
         "rembg_status": model_health["rembg"]["status"],
         "rembg_error": model_health["rembg"]["error"],
     }
@@ -2173,10 +2483,11 @@ async def convert(
         run_fn = run_trellis
         model_label = "TRELLIS"
     elif model == "trellis2":
-        if models["trellis2"] is None:
+        endpoint_enabled = bool(_resolve_trellis2_endpoint_url())
+        if models["trellis2"] is None and not endpoint_enabled:
             _safe_unlink(img_path)
             raise HTTPException(503, _model_unavailable_message("trellis2", "TRELLIS.2"))
-        run_fn = run_trellis2
+        run_fn = run_trellis2_endpoint_first if endpoint_enabled else run_trellis2
         model_label = "TRELLIS.2"
     else:
         run_fn = run_demo
