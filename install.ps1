@@ -169,7 +169,11 @@ import sys
 p = Path(sys.argv[1])
 txt = p.read_text(encoding="utf-8")
 
-if "self.backend = \"dinov3\"" in txt and "Falling back to open DINOv2" in txt:
+if (
+    "self.backend = \"dinov3\"" in txt
+    and "Falling back to open DINOv2" in txt
+    and "def _get_transformer_layers(self):" in txt
+):
     print("  trellis2 image_feature_extractor.py already patched")
     raise SystemExit(0)
 
@@ -191,9 +195,25 @@ new_extract = """    def extract_features(self, image: torch.Tensor) -> torch.Te
 if old_extract in txt:
     txt = txt.replace(old_extract, new_extract, 1)
 
+if "def _get_transformer_layers(self):" not in txt:
+    anchor = "    def extract_features(self, image: torch.Tensor) -> torch.Tensor:\n"
+    helper = """    def _get_transformer_layers(self):\n        # Transformers DINOv3 layouts differ across versions.\n        for candidate in (\n            getattr(self.model, \"layer\", None),\n            getattr(getattr(self.model, \"model\", None), \"layer\", None),\n            getattr(getattr(self.model, \"encoder\", None), \"layer\", None),\n            getattr(getattr(getattr(self.model, \"model\", None), \"encoder\", None), \"layer\", None),\n        ):\n            if candidate is not None:\n                return candidate\n        raise AttributeError(\n            \"DINOv3 layer stack not found (expected one of: model.layer, model.model.layer, \"\n            \"model.encoder.layer, model.model.encoder.layer)\"\n        )\n\n"""
+    if anchor in txt:
+        txt = txt.replace(anchor, helper + anchor, 1)
+
+target_loop = """        for layer_module in self._get_transformer_layers():\n            hidden_states = layer_module(\n                hidden_states,\n                position_embeddings=position_embeddings,\n            )\n"""
+for candidate_loop in (
+    """        for i, layer_module in enumerate(self.model.layer):\n            hidden_states = layer_module(\n                hidden_states,\n                position_embeddings=position_embeddings,\n            )\n""",
+    """        for layer_module in self.model.layer:\n            hidden_states = layer_module(\n                hidden_states,\n                position_embeddings=position_embeddings,\n            )\n""",
+    """        for layer_module in self.model.model.layer:\n            hidden_states = layer_module(\n                hidden_states,\n                position_embeddings=position_embeddings,\n            )\n""",
+):
+    if candidate_loop in txt and target_loop not in txt:
+        txt = txt.replace(candidate_loop, target_loop, 1)
+        break
+
 ast.parse(txt)
 p.write_text(txt, encoding="utf-8")
-print("  trellis2 image_feature_extractor.py patched (open-source fallback)")
+print("  trellis2 image_feature_extractor.py patched (open-source fallback + DINOv3 layer compat)")
 '@ | Set-Content -LiteralPath $patchScript -Encoding UTF8
 
     & "$pythonExe" "$patchScript" "$targetPath"
@@ -825,8 +845,11 @@ if ($SelectedModels["trellis2"] -and $runtimeDevice -eq "cuda") {
         if (-not (Test-Path -LiteralPath $t2IFEPath)) {
             $t2IFEPath = Join-Path $trellis2Dest "modules\attention\image_feature_extractor.py"
         }
+        if (-not (Test-Path -LiteralPath $t2IFEPath)) {
+            $t2IFEPath = Join-Path $trellis2Dest "modules\image_feature_extractor.py"
+        }
         if (Patch-Trellis2ImageExtractorForOSS "$PY" "$t2IFEPath") {
-            OK "TRELLIS.2 image extractor patched (DINOv2 fallback)"
+            OK "TRELLIS.2 image extractor patched (DINOv2 fallback + DINOv3 layer compat)"
         }
         $t2PipelinePath = Join-Path $trellis2Dest "pipelines\trellis2_image_to_3d.py"
         if (-not (Test-Path -LiteralPath $t2PipelinePath)) {

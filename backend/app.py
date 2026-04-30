@@ -204,6 +204,27 @@ def _resolve_hf_token() -> Optional[str]:
     return None
 
 
+def _load_trellis2_pipeline_with_auth_compat(Trellis2ImageTo3DPipeline, source: str, hf_token: Optional[str]):
+    if not hf_token:
+        return Trellis2ImageTo3DPipeline.from_pretrained(source)
+
+    # Make token available for libraries that read auth from env only.
+    os.environ.setdefault("HF_TOKEN", hf_token)
+
+    for kw_name in ("token", "use_auth_token"):
+        try:
+            return Trellis2ImageTo3DPipeline.from_pretrained(source, **{kw_name: hf_token})
+        except TypeError as e:
+            msg = str(e)
+            if "unexpected keyword argument" in msg and kw_name in msg:
+                logger.info("TRELLIS.2 loader does not support '%s'; trying next auth method", kw_name)
+                continue
+            raise
+
+    logger.info("TRELLIS.2 loader uses env-based auth fallback")
+    return Trellis2ImageTo3DPipeline.from_pretrained(source)
+
+
 def _resolve_trellis2_endpoint_url() -> str:
     return os.getenv("PIXFORM_TRELLIS2_ENDPOINT_URL", "").strip()
 
@@ -591,10 +612,7 @@ def load_all_models():
             logger.info("Loading TRELLIS.2 model (~20 GB first time, cached after)...")
             logger.info("TRELLIS.2 source: %s", trellis2_source)
             hf_token = _resolve_hf_token()
-            if hf_token:
-                pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source, token=hf_token)
-            else:
-                pipe2 = Trellis2ImageTo3DPipeline.from_pretrained(trellis2_source)
+            pipe2 = _load_trellis2_pipeline_with_auth_compat(Trellis2ImageTo3DPipeline, trellis2_source, hf_token)
             pipe2.cuda()
             models["trellis2"] = pipe2
             set_model_health("trellis2", "loaded")
